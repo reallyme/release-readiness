@@ -1,0 +1,14 @@
+{
+  "name": "@reallyme/release-readiness",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared release-readiness guardrails for ReallyMe repositories.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "check": "node --check core.mjs && node --check scripts/check_release_readiness.mjs && node --test test/*.test.mjs && node scripts/check_release_readiness.mjs"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

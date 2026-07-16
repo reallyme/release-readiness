@@ -1,0 +1,1390 @@
+// SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
+//
+// SPDX-License-Identifier: Apache-2.0
+
+import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { isAbsolute, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
+
+// This module is intentionally written as a standalone, vendorable release
+// readiness core. Sister repositories should copy it byte-for-byte or consume a
+// pinned upstream revision so release-critical checks do not drift silently.
+export const RELEASE_READINESS_CORE_CONTRACT_VERSION = 2;
+
+const DEFAULT_FAILURE_PREFIX = "release readiness check failed";
+
+export function createReleaseReadinessContext(options) {
+  const {
+    scriptUrl,
+    repoRoot = "..",
+    requireTrackedFiles = false,
+    failurePrefix = DEFAULT_FAILURE_PREFIX,
+  } = options ?? {};
+
+  if (typeof scriptUrl !== "string" || scriptUrl.length === 0) {
+    console.error(`${failurePrefix}: scriptUrl is required`);
+    process.exit(1);
+  }
+
+  let root;
+  try {
+    // Canonicalize the repository root so containment checks remain stable when
+    // the caller reached the worktree through an operating-system path alias
+    // such as /tmp versus /private/tmp.
+    root = realpathSync(resolve(fileURLToPath(new URL(repoRoot, scriptUrl))));
+  } catch {
+    console.error(`${failurePrefix}: repository root is missing or inaccessible`);
+    process.exit(1);
+  }
+  let trackedFiles = null;
+
+  const fail = (message) => {
+    console.error(`${failurePrefix}: ${message}`);
+    process.exit(1);
+  };
+
+  const resolveRepositoryPath = (path, description = "path") => {
+    if (
+      typeof path !== "string" ||
+      path.length === 0 ||
+      path.includes("\0") ||
+      isAbsolute(path)
+    ) {
+      fail(`${description} must be a non-empty repository-relative path`);
+    }
+    const absolute = resolve(root, path);
+    const repositoryRelative = relative(root, absolute);
+    if (
+      repositoryRelative === ".." ||
+      repositoryRelative.startsWith(`..${sep}`) ||
+      isAbsolute(repositoryRelative)
+    ) {
+      fail(`${description} escapes the repository root`);
+    }
+    return absolute;
+  };
+
+  const assertCanonicalPathInsideRepository = (absolute, description) => {
+    let canonical;
+    try {
+      canonical = realpathSync(absolute);
+    } catch {
+      fail(`${description} is missing or inaccessible`);
+    }
+    const repositoryRelative = relative(root, canonical);
+    if (
+      repositoryRelative === ".." ||
+      repositoryRelative.startsWith(`..${sep}`) ||
+      isAbsolute(repositoryRelative)
+    ) {
+      fail(`${description} resolves outside the repository root`);
+    }
+    return canonical;
+  };
+
+  const assertRegularFile = (path) => {
+    const absolute = resolveRepositoryPath(path);
+    let status;
+    try {
+      status = lstatSync(absolute);
+    } catch {
+      fail(`${path} is missing from the worktree`);
+    }
+    if (status.isSymbolicLink()) {
+      fail(`${path} must not be a symbolic link`);
+    }
+    if (!status.isFile()) {
+      fail(`${path} is not a regular file`);
+    }
+    return assertCanonicalPathInsideRepository(absolute, path);
+  };
+
+  const assertRepositoryDirectory = (path, description = path) => {
+    const absolute = resolveRepositoryPath(path, description);
+    let status;
+    try {
+      status = lstatSync(absolute);
+    } catch {
+      fail(`${description} is missing from the worktree`);
+    }
+    if (status.isSymbolicLink()) {
+      fail(`${description} must not be a symbolic link`);
+    }
+    if (!status.isDirectory()) {
+      fail(`${description} is not a directory`);
+    }
+    return assertCanonicalPathInsideRepository(absolute, description);
+  };
+
+  const run = (command, args, runOptions = {}) => {
+    if (typeof command !== "string" || command.length === 0) {
+      fail("release readiness command must be a non-empty string");
+    }
+    if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string")) {
+      fail(`${command} arguments must be an array of strings`);
+    }
+    const cwd =
+      runOptions.cwd === undefined
+        ? root
+        : assertRepositoryDirectory(
+            runOptions.cwd,
+            `${command} working directory`,
+          );
+    const result = spawnSync(command, args, {
+      cwd,
+      encoding: "utf8",
+      stdio: runOptions.capture ? "pipe" : "inherit",
+      env: runOptions.env ?? process.env,
+    });
+    if (result.error) {
+      fail(`${[command, ...args].join(" ")} failed to start: ${result.error.message}`);
+    }
+    if (result.status !== 0) {
+      if (runOptions.capture) {
+        process.stdout.write(result.stdout ?? "");
+        process.stderr.write(result.stderr ?? "");
+      }
+      process.exit(result.status ?? 1);
+    }
+    return result;
+  };
+
+  const loadTrackedFiles = () => {
+    if (trackedFiles !== null) {
+      return trackedFiles;
+    }
+    const result = spawnSync("git", ["ls-files", "-z"], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: "pipe",
+    });
+    if (result.error) {
+      fail(`git ls-files -z failed to start: ${result.error.message}`);
+    }
+    if (result.status !== 0) {
+      process.stdout.write(result.stdout ?? "");
+      process.stderr.write(result.stderr ?? "");
+      process.exit(result.status ?? 1);
+    }
+    trackedFiles = new Set(result.stdout.split("\0").filter(Boolean));
+    return trackedFiles;
+  };
+
+  const requireTracked = (path) => {
+    resolveRepositoryPath(path);
+    if (!loadTrackedFiles().has(path)) {
+      fail(`${path} is not tracked by Git`);
+    }
+  };
+
+  if (requireTrackedFiles) {
+    const corePath = relative(root, fileURLToPath(import.meta.url)).replaceAll("\\", "/");
+    requireTracked(corePath);
+  }
+
+  const readText = (path) => {
+    if (requireTrackedFiles) {
+      requireTracked(path);
+    }
+    return readFileSync(assertRegularFile(path), "utf8");
+  };
+
+  const readJson = (path) => {
+    try {
+      return JSON.parse(readText(path));
+    } catch {
+      fail(`${path} is not valid JSON`);
+    }
+  };
+
+  const fingerprintFile = (path) =>
+    createHash("sha256").update(readFileSync(assertRegularFile(path))).digest("hex");
+
+  const listFiles = (path) => {
+    resolveRepositoryPath(path);
+    const prefix = `${path}/`;
+    if (requireTrackedFiles) {
+      return [...loadTrackedFiles()].filter((file) => file.startsWith(prefix));
+    }
+
+    const directory = assertRepositoryDirectory(path);
+    const files = [];
+    const visit = (current) => {
+      for (const entry of readdirSync(current).sort()) {
+        const absolute = resolve(current, entry);
+        const status = lstatSync(absolute);
+        if (status.isSymbolicLink()) {
+          fail(`${relative(root, absolute)} must not be a symbolic link`);
+        }
+        if (status.isDirectory()) {
+          visit(absolute);
+        } else if (status.isFile()) {
+          files.push(relative(root, absolute));
+        } else {
+          fail(`${relative(root, absolute)} is not a regular file`);
+        }
+      }
+    };
+    visit(directory);
+    return files;
+  };
+
+  const loadUntrackedFiles = () => {
+    const result = spawnSync(
+      "git",
+      ["ls-files", "--others", "--exclude-standard", "-z"],
+      {
+        cwd: root,
+        encoding: "utf8",
+        stdio: "pipe",
+      },
+    );
+    if (result.error) {
+      fail(`git ls-files --others --exclude-standard -z failed to start: ${result.error.message}`);
+    }
+    if (result.status !== 0) {
+      process.stdout.write(result.stdout ?? "");
+      process.stderr.write(result.stderr ?? "");
+      process.exit(result.status ?? 1);
+    }
+    return result.stdout.split("\0").filter(Boolean);
+  };
+
+  const assertContains = (path, needle) => {
+    if (!readText(path).includes(needle)) {
+      fail(`${path} does not contain ${needle}`);
+    }
+  };
+
+  const assertNotContains = (path, needle) => {
+    if (readText(path).includes(needle)) {
+      fail(`${path} must not contain ${needle}`);
+    }
+  };
+
+  const assertMinOccurrences = (path, needle, expectedMin) => {
+    const count = readText(path).split(needle).length - 1;
+    if (count < expectedMin) {
+      fail(`${path} contains ${needle} ${count} time(s), expected at least ${expectedMin}`);
+    }
+  };
+
+  const assertTextPolicy = (policy) => {
+    const files = policy?.files ?? [];
+    if (!Array.isArray(files) || files.length === 0) {
+      fail("text policy requires at least one file policy");
+    }
+
+    for (const filePolicy of files) {
+      const {
+        path,
+        required = [],
+        forbidden = [],
+        minimumOccurrences = [],
+        requiredMatches = [],
+        forbiddenMatches = [],
+      } = filePolicy ?? {};
+      if (typeof path !== "string" || path.length === 0) {
+        fail("text file policy requires a path");
+      }
+      for (const [policyName, needles] of [
+        ["required", required],
+        ["forbidden", forbidden],
+      ]) {
+        if (
+          !Array.isArray(needles) ||
+          needles.some((needle) => typeof needle !== "string")
+        ) {
+          fail(`${path} ${policyName} text policy must be an array of strings`);
+        }
+      }
+      if (!Array.isArray(minimumOccurrences)) {
+        fail(`${path} minimum-occurrence policy must be an array`);
+      }
+      if (!Array.isArray(requiredMatches) || !Array.isArray(forbiddenMatches)) {
+        fail(`${path} regular-expression policies must be arrays`);
+      }
+      for (const needle of required) {
+        assertContains(path, needle);
+      }
+      for (const needle of forbidden) {
+        assertNotContains(path, needle);
+      }
+      for (const occurrence of minimumOccurrences) {
+        const { needle, count } = occurrence ?? {};
+        if (typeof needle !== "string" || !Number.isSafeInteger(count) || count < 0) {
+          fail(`${path} has an invalid minimum-occurrence policy`);
+        }
+        assertMinOccurrences(path, needle, count);
+      }
+      for (const matchPolicy of requiredMatches) {
+        const { pattern, description } = matchPolicy ?? {};
+        requireMatch(path, pattern, description);
+      }
+      for (const matchPolicy of forbiddenMatches) {
+        const { pattern, description } = matchPolicy ?? {};
+        assertNotMatches(path, pattern, description);
+      }
+    }
+  };
+
+  const clonePattern = (pattern) => {
+    if (!(pattern instanceof RegExp)) {
+      fail("release readiness match assertions require a RegExp");
+    }
+    return new RegExp(pattern.source, pattern.flags);
+  };
+
+  const requireMatch = (path, pattern, description) => {
+    // Clone caller-provided expressions so global or sticky regex state cannot
+    // make a repeated release check depend on an earlier invocation.
+    const match = clonePattern(pattern).exec(readText(path));
+    if (match === null) {
+      fail(`${path} does not contain ${description}`);
+    }
+    return match;
+  };
+
+  const assertNotMatches = (path, pattern, description) => {
+    // Keep this assertion deterministic when a shared expression uses `g` or `y`.
+    if (clonePattern(pattern).test(readText(path))) {
+      fail(`${path} must not contain ${description}`);
+    }
+  };
+
+  const assertLockPackageVersion = (lock, name, version, source = null) => {
+    const blocks = lock.match(/\[\[package\]\]\n[\s\S]*?(?=\n\[\[package\]\]|\n*$)/g) ?? [];
+    const block = blocks.find(
+      (candidate) =>
+        candidate.includes(`name = "${name}"\n`) && candidate.includes(`version = "${version}"\n`),
+    );
+    if (block === undefined) {
+      fail(`Cargo.lock does not pin ${name} ${version}`);
+    }
+    if (source !== null && !block.includes(`source = "${source}"\n`)) {
+      fail(`Cargo.lock ${name} ${version} does not use ${source}`);
+    }
+  };
+
+  const runNodeCheck = (scriptPath, args = []) => {
+    const result = spawnSync(process.execPath, [scriptPath, ...args], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: "pipe",
+    });
+    if (result.error) {
+      fail(`${[scriptPath, ...args].join(" ")} failed to start: ${result.error.message}`);
+    }
+    if (result.status !== 0) {
+      const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
+      const command = [scriptPath, ...args].join(" ");
+      fail(`${command} failed${output.length === 0 ? "" : `:\n${output}`}`);
+    }
+  };
+
+  const packageList = (packageName) => {
+    const args = ["package", "--list", "-p", packageName];
+    if (process.env.GITHUB_ACTIONS !== "true") {
+      args.push("--allow-dirty");
+    }
+    return run("cargo", args, { capture: true }).stdout.split(/\r?\n/u).filter(Boolean);
+  };
+
+  const assertPackageFiles = (packageName, requiredFiles) => {
+    const files = new Set(packageList(packageName));
+    for (const file of requiredFiles) {
+      if (!files.has(file)) {
+        fail(`${packageName} package is missing ${file}`);
+      }
+    }
+  };
+
+  const runCommands = (commands) => {
+    if (!Array.isArray(commands) || commands.length === 0) {
+      fail("command policy requires at least one command");
+    }
+    for (const entry of commands) {
+      if (!Array.isArray(entry) || entry.length < 2 || entry.length > 3) {
+        fail("command policy entries must be [command, args, options?] tuples");
+      }
+      const [command, args, options] = entry;
+      if (
+        options !== undefined &&
+        (options === null || typeof options !== "object" || Array.isArray(options))
+      ) {
+        fail("command policy options must be an object");
+      }
+      run(command, args, options ?? {});
+    }
+  };
+
+  const assertCargoMetadataDocument = (metadata, policy) => {
+    const packages = policy?.packages ?? [];
+    if (
+      metadata === null ||
+      typeof metadata !== "object" ||
+      !Array.isArray(metadata.packages)
+    ) {
+      fail("cargo metadata did not return a packages array");
+    }
+    if (!Array.isArray(packages) || packages.length === 0) {
+      fail("cargo metadata policy requires at least one package");
+    }
+
+    const packagesByName = new Map();
+    for (const cargoPackage of metadata.packages) {
+      if (
+        cargoPackage !== null &&
+        typeof cargoPackage === "object" &&
+        typeof cargoPackage.name === "string"
+      ) {
+        if (packagesByName.has(cargoPackage.name)) {
+          fail(`cargo metadata contains duplicate package ${cargoPackage.name}`);
+        }
+        packagesByName.set(cargoPackage.name, cargoPackage);
+      }
+    }
+
+    for (const packagePolicy of packages) {
+      const {
+        name,
+        version,
+        publish = "any",
+        dependencies = [],
+        packageFiles = [],
+      } = packagePolicy ?? {};
+      if (typeof name !== "string" || name.length === 0) {
+        fail("cargo metadata package policy requires a name");
+      }
+      const cargoPackage = packagesByName.get(name);
+      if (cargoPackage === undefined) {
+        fail(`cargo metadata did not expose ${name}`);
+      }
+      if (version !== undefined && cargoPackage.version !== version) {
+        fail(`${name} metadata version is ${cargoPackage.version}, expected ${version}`);
+      }
+      const isPublishable =
+        cargoPackage.publish === null ||
+        (Array.isArray(cargoPackage.publish) && cargoPackage.publish.length > 0);
+      if (publish === "public" && !isPublishable) {
+        fail(`${name} must be publishable`);
+      }
+      if (publish === "private" && isPublishable) {
+        fail(`${name} must set publish = false`);
+      }
+      if (!["any", "public", "private"].includes(publish)) {
+        fail(`${name} has an invalid publish policy`);
+      }
+      if (!Array.isArray(cargoPackage.dependencies)) {
+        fail(`${name} metadata dependencies are malformed`);
+      }
+      if (!Array.isArray(dependencies)) {
+        fail(`${name} dependency policy must be an array`);
+      }
+      if (
+        !Array.isArray(packageFiles) ||
+        packageFiles.some((file) => typeof file !== "string" || file.length === 0)
+      ) {
+        fail(`${name} package file policy must be an array of non-empty strings`);
+      }
+
+      for (const dependencyPolicy of dependencies) {
+        const {
+          name: dependencyName,
+          requirement,
+          source = "any",
+          defaultFeatures,
+          optional,
+          features,
+          kind,
+          target,
+          rename,
+        } = dependencyPolicy ?? {};
+        if (typeof dependencyName !== "string" || dependencyName.length === 0) {
+          fail(`${name} dependency policy requires a name`);
+        }
+        const candidates = cargoPackage.dependencies.filter(
+          (candidate) =>
+            candidate.name === dependencyName &&
+            (kind === undefined || candidate.kind === kind) &&
+            (target === undefined || candidate.target === target) &&
+            (rename === undefined || candidate.rename === rename),
+        );
+        if (candidates.length === 0) {
+          fail(`${name} is missing ${dependencyName}`);
+        }
+        if (candidates.length > 1) {
+          fail(
+            `${name} dependency ${dependencyName} is ambiguous; specify kind, target, or rename`,
+          );
+        }
+        const [dependency] = candidates;
+        if (requirement !== undefined && dependency.req !== requirement) {
+          fail(
+            `${name} dependency ${dependencyName} requirement is ${dependency.req}, expected ${requirement}`,
+          );
+        }
+        if (
+          source === "registry" &&
+          (typeof dependency.source !== "string" ||
+            !dependency.source.startsWith("registry+"))
+        ) {
+          fail(`${name} dependency ${dependencyName} must resolve from a registry`);
+        }
+        if (source === "path" && dependency.source !== null) {
+          fail(`${name} dependency ${dependencyName} must resolve from a path`);
+        }
+        if (!["any", "registry", "path"].includes(source)) {
+          fail(`${name} dependency ${dependencyName} has an invalid source policy`);
+        }
+        if (
+          defaultFeatures !== undefined &&
+          dependency.uses_default_features !== defaultFeatures
+        ) {
+          fail(
+            `${name} dependency ${dependencyName} default-features policy does not match`,
+          );
+        }
+        if (optional !== undefined && dependency.optional !== optional) {
+          fail(`${name} dependency ${dependencyName} optional policy does not match`);
+        }
+        if (features !== undefined) {
+          if (!Array.isArray(features) || features.some((feature) => typeof feature !== "string")) {
+            fail(`${name} dependency ${dependencyName} features policy is invalid`);
+          }
+          const actualFeatures = new Set(dependency.features ?? []);
+          for (const feature of features) {
+            if (!actualFeatures.has(feature)) {
+              fail(`${name} dependency ${dependencyName} is missing feature ${feature}`);
+            }
+          }
+        }
+      }
+
+      if (packageFiles.length > 0) {
+        assertPackageFiles(name, packageFiles);
+      }
+    }
+
+    return packagesByName;
+  };
+
+  const assertCargoMetadataPolicy = (policy) => {
+    const metadataArgs = policy?.metadataArgs ?? [
+      "metadata",
+      "--format-version",
+      "1",
+      "--no-deps",
+    ];
+    const metadataResult = run("cargo", metadataArgs, { capture: true });
+    let metadata;
+    try {
+      metadata = JSON.parse(metadataResult.stdout);
+    } catch {
+      fail("cargo metadata returned malformed JSON");
+    }
+    return assertCargoMetadataDocument(metadata, policy);
+  };
+
+  const snapshotDirectory = (path) => {
+    const directory = assertRepositoryDirectory(path);
+    const snapshot = new Map();
+    const visit = (current) => {
+      let entries;
+      try {
+        entries = readdirSync(current).sort();
+      } catch {
+        fail(`${relative(root, current)} is missing or inaccessible`);
+      }
+      for (const entry of entries) {
+        const absolute = resolve(current, entry);
+        const status = lstatSync(absolute);
+        if (status.isSymbolicLink()) {
+          fail(`${relative(root, absolute)} must not be a symbolic link`);
+        }
+        if (status.isDirectory()) {
+          visit(absolute);
+        } else if (status.isFile()) {
+          const file = relative(directory, absolute);
+          snapshot.set(file, fingerprintFile(`${path}/${file}`));
+        } else {
+          fail(`${relative(root, absolute)} is not a regular file`);
+        }
+      }
+    };
+    visit(directory);
+
+    if (requireTrackedFiles) {
+      const prefix = `${path}/`;
+      const tracked = new Set(
+        listFiles(path).map((file) => file.slice(prefix.length)),
+      );
+      for (const file of snapshot.keys()) {
+        if (!tracked.has(file)) {
+          fail(`${path}/${file} is not tracked by Git`);
+        }
+      }
+      for (const file of tracked) {
+        if (!snapshot.has(file)) {
+          fail(`${path}/${file} is tracked by Git but missing from the worktree`);
+        }
+      }
+    }
+
+    return snapshot;
+  };
+
+  const assertSnapshotsEqual = (path, before, after) => {
+    if (before.size !== after.size) {
+      fail(`${path} changed file count after regeneration`);
+    }
+
+    for (const [file, contents] of before) {
+      const regenerated = after.get(file);
+      if (regenerated === undefined || contents !== regenerated) {
+        fail(`${path}/${file} is stale; run the protobuf generation and hardening steps`);
+      }
+    }
+  };
+
+  const pathIsInside = (path, directory) =>
+    path === directory || path.startsWith(`${directory}/`);
+
+  const snapshotRepositoryFilesOutside = (excludedPaths) => {
+    const excluded = excludedPaths.map((path) => {
+      resolveRepositoryPath(path);
+      return path.replace(/\/+$/u, "");
+    });
+    const files = new Set([...loadTrackedFiles(), ...loadUntrackedFiles()]);
+    const snapshot = new Map();
+    for (const file of files) {
+      if (excluded.some((path) => pathIsInside(file, path))) {
+        continue;
+      }
+      snapshot.set(file, fingerprintFile(file));
+    }
+    return snapshot;
+  };
+
+  const assertRepositorySnapshotsEqual = (before, after) => {
+    if (before.size !== after.size) {
+      fail("protobuf regeneration changed files outside the declared generated paths");
+    }
+    for (const [file, contents] of before) {
+      const regenerated = after.get(file);
+      if (regenerated === undefined || contents !== regenerated) {
+        fail(`protobuf regeneration modified ${file} outside the declared generated paths`);
+      }
+    }
+  };
+
+  const validateGeneratedArtifactsPolicy = (regeneration) => {
+    const generatedPaths = regeneration?.generatedPaths ?? [];
+    const commands = regeneration?.commands ?? [];
+    if (!Array.isArray(generatedPaths) || generatedPaths.length === 0) {
+      fail("generated artifact freshness check requires at least one generated path");
+    }
+    if (generatedPaths.some((path) => typeof path !== "string" || path.length === 0)) {
+      fail("generated artifact paths must be non-empty strings");
+    }
+    if (!Array.isArray(commands) || commands.length === 0) {
+      fail("generated artifact freshness check requires at least one regeneration command");
+    }
+    const normalizedPaths = generatedPaths.map((path) =>
+      relative(root, assertRepositoryDirectory(path, "generated artifact path")).replaceAll(
+        "\\",
+        "/",
+      ),
+    );
+    if (normalizedPaths.some((path) => path.length === 0 || path === ".")) {
+      fail("generated artifact paths must not include the repository root");
+    }
+    for (const [index, path] of normalizedPaths.entries()) {
+      if (
+        normalizedPaths.some(
+          (candidate, candidateIndex) =>
+            candidateIndex !== index && pathIsInside(path, candidate),
+        )
+      ) {
+        fail("generated artifact paths must not overlap");
+      }
+    }
+    for (const entry of commands) {
+      if (!Array.isArray(entry) || entry.length < 2 || entry.length > 3) {
+        fail("regeneration commands must be [command, args, options?] tuples");
+      }
+      const [command, args] = entry;
+      if (
+        typeof command !== "string" ||
+        command.length === 0 ||
+        !Array.isArray(args) ||
+        args.some((arg) => typeof arg !== "string")
+      ) {
+        fail("regeneration commands require a command and string arguments");
+      }
+      const options = entry[2];
+      if (
+        options !== undefined &&
+        (options === null || typeof options !== "object" || Array.isArray(options))
+      ) {
+        fail("regeneration command options must be an object");
+      }
+    }
+    return { generatedPaths: normalizedPaths, commands };
+  };
+
+  const assertGeneratedArtifactsFresh = (regeneration) => {
+    const { generatedPaths, commands } = validateGeneratedArtifactsPolicy(regeneration);
+
+    const snapshotsBefore = new Map(
+      generatedPaths.map((path) => [path, snapshotDirectory(path)]),
+    );
+    const repositoryBefore = requireTrackedFiles
+      ? snapshotRepositoryFilesOutside(generatedPaths)
+      : null;
+    runCommands(commands);
+    for (const path of generatedPaths) {
+      assertSnapshotsEqual(path, snapshotsBefore.get(path), snapshotDirectory(path));
+    }
+    if (repositoryBefore !== null) {
+      assertRepositorySnapshotsEqual(
+        repositoryBefore,
+        snapshotRepositoryFilesOutside(generatedPaths),
+      );
+    }
+  };
+
+  const assertGeneratedProtoHardeningPolicy = (policy) => {
+    const {
+      hardeningScript,
+      generatedRust,
+      generatedView,
+      protoCargo,
+      workflow,
+      workflowStepName,
+      workflowStepRun,
+      requiredScriptNeedles = [],
+      forbiddenScriptNeedles = [],
+      requiredGeneratedNeedles = [],
+      forbiddenGeneratedNeedles = [],
+      requiredViewNeedles = [],
+      requiredCargoNeedles = [],
+      secretByteFields = [],
+    } = policy ?? {};
+
+    if (typeof hardeningScript !== "string" || hardeningScript.length === 0) {
+      fail("generated proto hardening policy requires a hardeningScript path");
+    }
+    if (typeof generatedRust !== "string" || generatedRust.length === 0) {
+      fail("generated proto hardening policy requires a generatedRust path");
+    }
+    for (const [policyName, needles] of [
+      ["required script", requiredScriptNeedles],
+      ["forbidden script", forbiddenScriptNeedles],
+      ["required generated", requiredGeneratedNeedles],
+      ["forbidden generated", forbiddenGeneratedNeedles],
+      ["required view", requiredViewNeedles],
+      ["required Cargo", requiredCargoNeedles],
+    ]) {
+      if (
+        !Array.isArray(needles) ||
+        needles.some((needle) => typeof needle !== "string")
+      ) {
+        fail(`generated proto ${policyName} policy must be an array of strings`);
+      }
+    }
+    if (requiredScriptNeedles.length === 0) {
+      fail("generated proto hardening policy requires script invariants");
+    }
+    if (requiredGeneratedNeedles.length === 0) {
+      fail("generated proto hardening policy requires generated-code invariants");
+    }
+    if (forbiddenGeneratedNeedles.length === 0) {
+      fail("generated proto hardening policy requires forbidden generated-code invariants");
+    }
+    if (
+      !Array.isArray(secretByteFields) ||
+      secretByteFields.some(
+        (field) => typeof field !== "string" || !/^[a-z][a-z0-9_]*$/u.test(field),
+      )
+    ) {
+      fail("generated proto secret byte fields must be protobuf field identifiers");
+    }
+    if (secretByteFields.length === 0) {
+      fail("generated proto hardening policy requires declared secret byte fields");
+    }
+    for (const [policyName, value] of [
+      ["generated view", generatedView],
+      ["proto Cargo", protoCargo],
+      ["workflow", workflow],
+      ["workflow step name", workflowStepName],
+      ["workflow step run", workflowStepRun],
+    ]) {
+      if (value !== undefined && typeof value !== "string") {
+        fail(`generated proto ${policyName} policy must be a string`);
+      }
+    }
+    if (
+      typeof generatedView === "string" &&
+      generatedView.length !== 0 &&
+      requiredViewNeedles.length === 0
+    ) {
+      fail("generated proto hardening policy requires generated view invariants");
+    }
+    if (
+      typeof protoCargo === "string" &&
+      protoCargo.length !== 0 &&
+      requiredCargoNeedles.length === 0
+    ) {
+      fail("generated proto hardening policy requires proto Cargo invariants");
+    }
+    const workflowValues = [workflow, workflowStepName, workflowStepRun];
+    const configuredWorkflowValues = workflowValues.filter(
+      (value) => typeof value === "string" && value.length !== 0,
+    );
+    if (
+      configuredWorkflowValues.length !== 0 &&
+      configuredWorkflowValues.length !== workflowValues.length
+    ) {
+      fail("generated proto workflow policy must configure path, step name, and run command");
+    }
+
+    for (const needle of requiredScriptNeedles) {
+      assertContains(hardeningScript, needle);
+    }
+    for (const needle of forbiddenScriptNeedles) {
+      assertNotContains(hardeningScript, needle);
+    }
+    for (const field of secretByteFields) {
+      assertContains(generatedRust, `.field("${field}", &"<redacted>")`);
+      assertNotContains(generatedRust, `.field("${field}", &self.${field})`);
+      assertContains(generatedRust, `::zeroize::Zeroize::zeroize(&mut self.${field});`);
+      assertContains(
+        generatedRust,
+        `${field}: ::zeroize::Zeroizing<::buffa::alloc::vec::Vec<u8>>`,
+      );
+    }
+    for (const needle of requiredGeneratedNeedles) {
+      assertContains(generatedRust, needle);
+    }
+    for (const needle of forbiddenGeneratedNeedles) {
+      assertNotContains(generatedRust, needle);
+    }
+    if (typeof generatedView === "string" && generatedView.length !== 0) {
+      for (const needle of requiredViewNeedles) {
+        assertContains(generatedView, needle);
+      }
+    }
+    if (typeof protoCargo === "string" && protoCargo.length !== 0) {
+      for (const needle of requiredCargoNeedles) {
+        assertContains(protoCargo, needle);
+      }
+    }
+    if (
+      typeof workflow === "string" &&
+      workflow.length !== 0 &&
+      typeof workflowStepName === "string" &&
+      workflowStepName.length !== 0 &&
+      typeof workflowStepRun === "string" &&
+      workflowStepRun.length !== 0
+    ) {
+      assertWorkflowRunStep(workflow, workflowStepName, workflowStepRun);
+    }
+  };
+
+  const assertReallyMeProtobufReleasePolicy = (policy) => {
+    const {
+      workflow = ".github/workflows/protobuf-ci.yml",
+      corePath = "scripts/release-readiness/core.mjs",
+      bufVersion = "1.71.0",
+      buffaVersion = "0.8.1",
+      installBufStepName = "Install buf",
+      installBufUses = null,
+      installBufRun = null,
+      installBuffaStepName = "Install pinned Buffa generators",
+      lintStepName = "Lint protobuf schema",
+      generateStepName = "Regenerate protobuf artifacts",
+      hardeningPolicy,
+      generatedFreshnessMode = false,
+      generatedFreshness,
+      generatedFreshnessStepName = "Check release readiness generated freshness",
+      generatedFreshnessStepRun = "node scripts/check_release_readiness.mjs --generated-freshness",
+      workflowMode = "explicit",
+    } = policy ?? {};
+
+    assertContains(workflow, `BUFFA_VERSION: ${buffaVersion}`);
+    assertContains(workflow, `BUF_VERSION: ${bufVersion}`);
+    assertContains(workflow, corePath);
+    validateGeneratedArtifactsPolicy(generatedFreshness);
+
+    if (installBufUses !== null) {
+      assertWorkflowUsesStep(workflow, installBufStepName, installBufUses);
+    }
+    if (installBufRun !== null) {
+      assertWorkflowRunStep(workflow, installBufStepName, installBufRun);
+    }
+    assertWorkflowRunStep(
+      workflow,
+      installBuffaStepName,
+      `cargo install protoc-gen-buffa --version "$BUFFA_VERSION" --locked
+cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
+    );
+    assertWorkflowRunStep(workflow, generatedFreshnessStepName, generatedFreshnessStepRun);
+
+    if (workflowMode === "explicit") {
+      assertWorkflowRunStep(workflow, lintStepName, "buf lint");
+      assertWorkflowRunStep(workflow, generateStepName, "buf generate");
+    } else if (workflowMode === "delegated") {
+      const duplicateCommands = extractWorkflowSteps(workflow).filter(
+        (step) =>
+          step.name !== generatedFreshnessStepName &&
+          typeof step.run === "string" &&
+          /(?:^|\n)\s*buf\s+(?:lint|generate)\b/u.test(step.run),
+      );
+      if (duplicateCommands.length > 0) {
+        fail(
+          `${workflow} duplicates protobuf generation outside ${generatedFreshnessStepName}`,
+        );
+      }
+    } else {
+      fail(`unsupported protobuf workflow mode ${workflowMode}`);
+    }
+
+    assertGeneratedProtoHardeningPolicy(hardeningPolicy);
+
+    if (generatedFreshnessMode) {
+      assertGeneratedArtifactsFresh(generatedFreshness);
+    }
+  };
+
+  const assertReallyMeVendoredCorePolicy = (policy = {}) => {
+    const {
+      scriptPath = "scripts/check_release_readiness.mjs",
+      corePath = "scripts/release-readiness/core.mjs",
+      contractVersion = RELEASE_READINESS_CORE_CONTRACT_VERSION,
+    } = policy;
+
+    requireTracked(scriptPath);
+    requireTracked(corePath);
+    assertContains(corePath, `RELEASE_READINESS_CORE_CONTRACT_VERSION = ${contractVersion}`);
+    assertContains(corePath, "assertGeneratedArtifactsFresh");
+    assertContains(corePath, "assertGeneratedProtoHardeningPolicy");
+    assertContains(corePath, "assertReallyMeProtobufReleasePolicy");
+    assertContains(corePath, "assertReallyMeVendoredCorePolicy");
+    assertContains(corePath, "assertCargoMetadataPolicy");
+    assertContains(corePath, "assertTextPolicy");
+    assertContains(corePath, "assertWorkflowActionsPinned");
+    assertContains(corePath, "assertWorkflowPolicy");
+    assertContains(corePath, "runCommands");
+    assertContains(corePath, "secretByteFields");
+    assertContains(corePath, "assertWorkflowRunStep");
+    assertContains(corePath, "assertWorkflowUsesStep");
+  };
+
+  const assertNodeWorkflowJobsPinNode = (workflowOptions = {}) => {
+    const workflowDirectoryPath = workflowOptions.workflowDirectory ?? ".github/workflows";
+    const workflowDirectory = assertRepositoryDirectory(
+      workflowDirectoryPath,
+      "workflow directory",
+    );
+    const nodeVersion = workflowOptions.nodeVersion ?? "24";
+    for (const workflowFile of readdirSync(workflowDirectory).filter((name) => /\.ya?ml$/u.test(name))) {
+      const workflowPath = `${workflowDirectoryPath}/${workflowFile}`;
+      const workflow = readText(workflowPath);
+      const jobsOffset = workflow.indexOf("\njobs:\n");
+      if (jobsOffset === -1) {
+        continue;
+      }
+      const jobs = workflow.slice(jobsOffset + 1);
+      const jobHeaders = [...jobs.matchAll(/^  ([a-zA-Z0-9_-]+):\s*$/gm)];
+      for (const [index, header] of jobHeaders.entries()) {
+        const nextHeader = jobHeaders[index + 1];
+        const job = jobs.slice(header.index, nextHeader?.index ?? jobs.length);
+        const activeJob = job
+          .split("\n")
+          .filter((line) => !line.trimStart().startsWith("#"))
+          .join("\n");
+        if (!/\b(?:node|npm|npx|pnpm)\b/.test(activeJob)) {
+          continue;
+        }
+        if (!/^\s*uses:\s*actions\/setup-node@[^\s#]+(?:\s+#.*)?$/m.test(activeJob)) {
+          fail(`${workflowPath} job ${header[1]} uses Node tooling without actions/setup-node`);
+        }
+        const pinnedNodeVersion = activeJob.split("\n").some((line) => {
+          const match = /^\s*node-version:\s*(.+?)\s*$/u.exec(line);
+          return match !== null && unquoteWorkflowScalar(match[1]) === nodeVersion;
+        });
+        if (!pinnedNodeVersion) {
+          fail(`${workflowPath} job ${header[1]} must pin Node ${nodeVersion}`);
+        }
+      }
+    }
+  };
+
+  const normalizeWorkflowRunCommand = (command) =>
+    command
+      .replace(/\r\n/gu, "\n")
+      .split("\n")
+      .map((line) => line.trimEnd())
+      .join("\n")
+      .trim();
+
+  const stripWorkflowInlineComment = (value) => {
+    let quote = null;
+    for (let index = 0; index < value.length; index += 1) {
+      const character = value[index];
+      if (quote !== null) {
+        if (character === quote && value[index - 1] !== "\\") {
+          quote = null;
+        }
+        continue;
+      }
+      if (character === '"' || character === "'") {
+        quote = character;
+        continue;
+      }
+      if (character === "#" && (index === 0 || /\s/u.test(value[index - 1]))) {
+        return value.slice(0, index);
+      }
+    }
+    return value;
+  };
+
+  const unquoteWorkflowScalar = (value) => {
+    const trimmed = stripWorkflowInlineComment(value).trim();
+    if (
+      (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'"))
+    ) {
+      return trimmed.slice(1, -1);
+    }
+    return trimmed;
+  };
+
+  const countLeadingSpaces = (line) => {
+    const match = /^ */u.exec(line);
+    return match?.[0].length ?? 0;
+  };
+
+  const extractWorkflowSteps = (path) => {
+    const lines = readText(path).replace(/\r\n/gu, "\n").split("\n");
+    const steps = [];
+    for (let index = 0; index < lines.length; index += 1) {
+      const nameMatch = /^(\s*)-\s+name:\s*(.+?)\s*$/u.exec(lines[index]);
+      if (nameMatch === null) {
+        continue;
+      }
+
+      const stepIndent = nameMatch[1].length;
+      const name = unquoteWorkflowScalar(nameMatch[2]);
+      let end = lines.length;
+      for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+        const candidate = lines[cursor];
+        if (countLeadingSpaces(candidate) === stepIndent && /^\s*-\s+/u.test(candidate)) {
+          end = cursor;
+          break;
+        }
+      }
+
+      let run = null;
+      let uses = null;
+      for (let cursor = index + 1; cursor < end; cursor += 1) {
+        const runMatch = /^(\s*)run:\s*(.*)\s*$/u.exec(lines[cursor]);
+        if (runMatch !== null) {
+          if (run !== null) {
+            fail(`${path} step ${name} defines run more than once`);
+          }
+          const runIndent = runMatch[1].length;
+          const marker = runMatch[2].trim();
+          if (marker === ">") {
+            fail(`${path} step ${name} uses an unsupported folded run scalar`);
+          }
+          if (marker === "|") {
+            const blockLines = [];
+            for (let blockCursor = cursor + 1; blockCursor < end; blockCursor += 1) {
+              const blockLine = lines[blockCursor];
+              if (blockLine.trim().length !== 0 && countLeadingSpaces(blockLine) <= runIndent) {
+                break;
+              }
+              blockLines.push(blockLine);
+            }
+            const nonBlankIndents = blockLines
+              .filter((line) => line.trim().length !== 0)
+              .map((line) => countLeadingSpaces(line));
+            const blockIndent =
+              nonBlankIndents.length === 0 ? runIndent + 2 : Math.min(...nonBlankIndents);
+            run = blockLines.map((line) => line.slice(Math.min(blockIndent, line.length))).join("\n");
+          } else {
+            run = unquoteWorkflowScalar(marker);
+          }
+        }
+
+        const usesMatch = /^\s*uses:\s*(.+?)\s*$/u.exec(lines[cursor]);
+        if (usesMatch !== null) {
+          if (uses !== null) {
+            fail(`${path} step ${name} defines uses more than once`);
+          }
+          uses = unquoteWorkflowScalar(usesMatch[1]);
+        }
+      }
+
+      steps.push({ name, run, uses });
+    }
+    return steps;
+  };
+
+  const findWorkflowStep = (path, stepName) => {
+    if (typeof stepName !== "string" || stepName.length === 0) {
+      fail(`${path} workflow step policy requires a step name`);
+    }
+    const steps = extractWorkflowSteps(path).filter(
+      (candidate) => candidate.name === stepName,
+    );
+    if (steps.length === 0) {
+      fail(`${path} is missing workflow step ${stepName}`);
+    }
+    if (steps.length > 1) {
+      fail(`${path} defines workflow step ${stepName} more than once`);
+    }
+    return steps[0];
+  };
+
+  const assertWorkflowRunStep = (path, stepName, expectedRun) => {
+    if (typeof expectedRun !== "string" || expectedRun.length === 0) {
+      fail(`${path} step ${stepName} requires an expected run command`);
+    }
+    const step = findWorkflowStep(path, stepName);
+    if (step.run === null) {
+      fail(`${path} step ${stepName} does not define a run command`);
+    }
+    const actual = normalizeWorkflowRunCommand(step.run);
+    const expected = normalizeWorkflowRunCommand(expectedRun);
+    if (actual !== expected) {
+      fail(`${path} step ${stepName} run command changed`);
+    }
+  };
+
+  const assertWorkflowUsesStep = (path, stepName, expectedUses) => {
+    if (typeof expectedUses !== "string" || expectedUses.length === 0) {
+      fail(`${path} step ${stepName} requires an expected action`);
+    }
+    const step = findWorkflowStep(path, stepName);
+    const expected = unquoteWorkflowScalar(expectedUses);
+    if (step.uses !== expected) {
+      fail(`${path} step ${stepName} must use ${expected}`);
+    }
+  };
+
+  const assertWorkflowPolicy = (policy) => {
+    const {
+      path,
+      required = [],
+      forbidden = [],
+      runSteps = [],
+      usesSteps = [],
+    } = policy ?? {};
+    if (typeof path !== "string" || path.length === 0) {
+      fail("workflow policy requires a path");
+    }
+    for (const [policyName, values] of [
+      ["required", required],
+      ["forbidden", forbidden],
+    ]) {
+      if (
+        !Array.isArray(values) ||
+        values.some((value) => typeof value !== "string")
+      ) {
+        fail(`${path} workflow ${policyName} policy must be an array of strings`);
+      }
+    }
+    if (!Array.isArray(runSteps) || !Array.isArray(usesSteps)) {
+      fail(`${path} workflow step policies must be arrays`);
+    }
+    for (const needle of required) {
+      assertContains(path, needle);
+    }
+    for (const needle of forbidden) {
+      assertNotContains(path, needle);
+    }
+    for (const step of runSteps) {
+      assertWorkflowRunStep(path, step?.name, step?.run);
+    }
+    for (const step of usesSteps) {
+      assertWorkflowUsesStep(path, step?.name, step?.uses);
+    }
+  };
+
+  const assertWorkflowActionsPinned = (workflowOptions = {}) => {
+    const workflowDirectoryPath = workflowOptions.workflowDirectory ?? ".github/workflows";
+    const workflowDirectory = assertRepositoryDirectory(
+      workflowDirectoryPath,
+      "workflow directory",
+    );
+    const allowedNonShaUsesPolicy = workflowOptions.allowedNonShaUses ?? [];
+    if (
+      !Array.isArray(allowedNonShaUsesPolicy) ||
+      allowedNonShaUsesPolicy.some((uses) => typeof uses !== "string")
+    ) {
+      fail("allowed non-SHA workflow actions must be an array of strings");
+    }
+    const allowedNonShaUses = new Set(allowedNonShaUsesPolicy);
+    const allowLocalActions = workflowOptions.allowLocalActions ?? true;
+    const allowDockerActions = workflowOptions.allowDockerActions ?? false;
+    if (typeof allowLocalActions !== "boolean" || typeof allowDockerActions !== "boolean") {
+      fail("workflow action allow policies must be booleans");
+    }
+    const fullCommitUse =
+      /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_./-]+)?@[0-9a-f]{40}$/u;
+
+    for (const workflowFile of readdirSync(workflowDirectory).filter((name) => /\.ya?ml$/u.test(name))) {
+      const workflowPath = `${workflowDirectoryPath}/${workflowFile}`;
+      const lines = readText(workflowPath).replace(/\r\n/gu, "\n").split("\n");
+      for (const [index, line] of lines.entries()) {
+        const match = /^\s*(?:-\s+)?uses:\s*(.+?)\s*$/u.exec(line);
+        if (match === null) {
+          continue;
+        }
+        const uses = unquoteWorkflowScalar(match[1]);
+        if (
+          allowedNonShaUses.has(uses)
+        ) {
+          continue;
+        }
+        if (uses.startsWith("./")) {
+          if (!allowLocalActions) {
+            fail(`${workflowPath}:${index + 1} local action ${uses} is not allowed`);
+          }
+          resolveRepositoryPath(uses.slice(2), "local workflow action");
+          continue;
+        }
+        if (uses.startsWith("docker://")) {
+          if (!allowDockerActions) {
+            fail(`${workflowPath}:${index + 1} Docker action ${uses} is not allowed`);
+          }
+          if (!/^docker:\/\/[^@\s]+@sha256:[0-9a-f]{64}$/u.test(uses)) {
+            fail(
+              `${workflowPath}:${index + 1} Docker action ${uses} is not pinned to a sha256 digest`,
+            );
+          }
+          continue;
+        }
+        if (!fullCommitUse.test(uses)) {
+          fail(`${workflowPath}:${index + 1} action ${uses} is not pinned to a full commit SHA`);
+        }
+      }
+    }
+  };
+
+  const stripProtoLineComments = (text) =>
+    text
+      .split("\n")
+      .map((line) => {
+        const commentStart = line.indexOf("//");
+        return commentStart === -1 ? line : line.slice(0, commentStart);
+      })
+      .join("\n");
+
+  const extractProtoBlocks = (protoText, keyword) => {
+    const blocks = [];
+    const declarationPattern = new RegExp(`\\b${keyword}\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\{`, "g");
+    let match = declarationPattern.exec(protoText);
+    while (match !== null) {
+      let depth = 1;
+      let cursor = declarationPattern.lastIndex;
+      while (cursor < protoText.length && depth > 0) {
+        const char = protoText[cursor];
+        if (char === "{") {
+          depth += 1;
+        } else if (char === "}") {
+          depth -= 1;
+        }
+        cursor += 1;
+      }
+      if (depth !== 0) {
+        fail(`proto ${keyword} ${match[1]} has unbalanced braces`);
+      }
+      blocks.push({
+        name: match[1],
+        body: protoText.slice(declarationPattern.lastIndex, cursor - 1),
+      });
+      declarationPattern.lastIndex = cursor;
+      match = declarationPattern.exec(protoText);
+    }
+    return blocks;
+  };
+
+  const assertSequentialProtoContract = (path) => {
+    const proto = stripProtoLineComments(readText(path));
+    if (/\breserved\b/.test(proto)) {
+      fail(`${path} must not reserve field numbers or names before first release`);
+    }
+
+    for (const block of extractProtoBlocks(proto, "enum")) {
+      const values = [...block.body.matchAll(/^\s*[A-Z][A-Z0-9_]*\s*=\s*(\d+)\s*;/gm)].map(
+        (match) => Number.parseInt(match[1], 10),
+      );
+      values.forEach((value, index) => {
+        if (value !== index) {
+          fail(`${path} enum ${block.name} value ${index} must be ${index}, found ${value}`);
+        }
+      });
+    }
+
+    for (const block of extractProtoBlocks(proto, "message")) {
+      const values = [
+        ...block.body.matchAll(
+          /^\s*(?:optional\s+|repeated\s+)?(?:[A-Za-z_][A-Za-z0-9_.<>]*\s+)+[A-Za-z_][A-Za-z0-9_]*\s*=\s*(\d+)\s*;/gm,
+        ),
+      ].map((match) => Number.parseInt(match[1], 10));
+      values.forEach((value, index) => {
+        const expected = index + 1;
+        if (value !== expected) {
+          fail(`${path} message ${block.name} field ${expected} must be ${expected}, found ${value}`);
+        }
+      });
+    }
+  };
+
+  return {
+    root,
+    fail,
+    readText,
+    readJson,
+    listFiles,
+    requireTracked,
+    loadTrackedFiles,
+    assertContains,
+    assertNotContains,
+    assertMinOccurrences,
+    assertTextPolicy,
+    requireMatch,
+    assertNotMatches,
+    assertLockPackageVersion,
+    run,
+    runCommands,
+    runNodeCheck,
+    packageList,
+    assertPackageFiles,
+    assertCargoMetadataDocument,
+    assertCargoMetadataPolicy,
+    snapshotDirectory,
+    assertSnapshotsEqual,
+    validateGeneratedArtifactsPolicy,
+    assertGeneratedArtifactsFresh,
+    assertGeneratedProtoHardeningPolicy,
+    assertReallyMeProtobufReleasePolicy,
+    assertReallyMeVendoredCorePolicy,
+    assertNodeWorkflowJobsPinNode,
+    assertWorkflowActionsPinned,
+    normalizeWorkflowRunCommand,
+    extractWorkflowSteps,
+    assertWorkflowRunStep,
+    assertWorkflowUsesStep,
+    assertWorkflowPolicy,
+    stripProtoLineComments,
+    extractProtoBlocks,
+    assertSequentialProtoContract,
+  };
+}
