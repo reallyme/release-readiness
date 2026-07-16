@@ -410,3 +410,30 @@ test("cargo metadata policy rejects ambiguous dependency matches", () => {
   assert.equal(result.status, 1);
   assert.match(result.stderr, /dependency reallyme-crypto is ambiguous/u);
 });
+
+test("SPDX policy rejects tracked source files without headers", () => {
+  const root = createTrackedFixture();
+  writeFileSync(join(root, "missing.rs"), "pub fn missing() {}\n");
+  const gitAdd = spawnSync("git", ["add", "missing.rs"], { cwd: root, encoding: "utf8" });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const fixtureCoreUrl = pathToFileURL(
+    join(root, "scripts", "release-readiness", "core.mjs"),
+  ).href;
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      `import { createReleaseReadinessContext } from ${JSON.stringify(fixtureCoreUrl)};
+const context = createReleaseReadinessContext({
+  scriptUrl: ${JSON.stringify(pathToFileURL(join(root, "scripts", "check.mjs")).href)},
+  requireTrackedFiles: true,
+});
+context.assertSpdxHeaders({ excludedPrefixes: [".github"] });`,
+    ],
+    { cwd: root, encoding: "utf8" },
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /missing\.rs is missing the ReallyMe SPDX/u);
+});

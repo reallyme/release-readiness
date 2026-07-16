@@ -31,12 +31,18 @@ release scripts with helpers for:
   assertions without moving product semantics into the shared package.
 - Cargo metadata policy checks for package versions, publishability,
   dependency sources, default features, and packaged file surfaces.
+- Workspace-wide Cargo checks for inherited lints, publish include allowlists,
+  and publishable path-dependency version alignment.
+- Tracked-source SPDX header enforcement with configurable extensions and
+  exclusions.
 - Validated command matrices for repository-specific release suites.
 - Protobuf generated-output freshness checks.
 - Protobuf contract checks for pre-release sequential enum and message numbering.
 - Generated protobuf hardening checks driven by each repo's hardening script.
 - Generated protobuf redaction and zeroization policy checks through
-  `assertGeneratedProtoHardeningPolicy`.
+`assertGeneratedProtoHardeningPolicy`.
+- Additional generated-file policies for oneof, view-oneof, service, and other
+  generator-specific security surfaces.
 - A combined ReallyMe protobuf release lane through
   `assertReallyMeProtobufReleasePolicy`.
 - A vendored-core policy through `assertReallyMeVendoredCorePolicy`, so

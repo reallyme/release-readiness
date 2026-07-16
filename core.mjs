@@ -4,7 +4,7 @@
 
 import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { extname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
@@ -588,6 +588,141 @@ export function createReleaseReadinessContext(options) {
     return assertCargoMetadataDocument(metadata, policy);
   };
 
+  const assertCargoWorkspacePolicy = (policy = {}) => {
+    const {
+      requireWorkspaceLints = true,
+      requirePublishInclude = true,
+      validatePublishablePathDependencies = true,
+    } = policy;
+    const metadataResult = run(
+      "cargo",
+      ["metadata", "--format-version", "1", "--no-deps"],
+      { capture: true },
+    );
+    let metadata;
+    try {
+      metadata = JSON.parse(metadataResult.stdout);
+    } catch {
+      fail("cargo metadata returned malformed JSON");
+    }
+    if (
+      !Array.isArray(metadata.packages) ||
+      !Array.isArray(metadata.workspace_members)
+    ) {
+      fail("cargo workspace metadata is malformed");
+    }
+
+    const workspaceIds = new Set(metadata.workspace_members);
+    const workspacePackages = metadata.packages.filter((cargoPackage) =>
+      workspaceIds.has(cargoPackage.id),
+    );
+    const publishableByName = new Map();
+    const parseSemver = (version) => {
+      const match = /^(\d+)\.(\d+)\.(\d+)$/u.exec(version);
+      if (match === null) {
+        return null;
+      }
+      return match.slice(1).map((part) => Number.parseInt(part, 10));
+    };
+    const caretIncludes = (requirement, version) => {
+      if (!requirement.startsWith("^")) {
+        return requirement === version || requirement === `=${version}`;
+      }
+      const minimum = parseSemver(requirement.slice(1));
+      const actual = parseSemver(version);
+      if (minimum === null || actual === null || actual[0] !== minimum[0]) {
+        return false;
+      }
+      if (minimum[0] === 0 && actual[1] !== minimum[1]) {
+        return false;
+      }
+      return (
+        actual[1] > minimum[1] ||
+        (actual[1] === minimum[1] && actual[2] >= minimum[2])
+      );
+    };
+    for (const cargoPackage of workspacePackages) {
+      const manifestPath = relative(root, cargoPackage.manifest_path).replaceAll("\\", "/");
+      const manifest = readText(manifestPath);
+      if (
+        requireWorkspaceLints &&
+        !/\[lints\]\s+workspace\s*=\s*true\b/u.test(manifest)
+      ) {
+        fail(`${manifestPath} must inherit workspace lints`);
+      }
+      const publishable =
+        cargoPackage.publish === null ||
+        (Array.isArray(cargoPackage.publish) && cargoPackage.publish.length > 0);
+      if (publishable) {
+        publishableByName.set(cargoPackage.name, cargoPackage);
+        if (
+          requirePublishInclude &&
+          !/^include\s*=\s*\[/mu.test(manifest)
+        ) {
+          fail(`${manifestPath} publishable package must use an include allowlist`);
+        }
+      }
+    }
+
+    if (validatePublishablePathDependencies) {
+      for (const cargoPackage of publishableByName.values()) {
+        for (const dependency of cargoPackage.dependencies ?? []) {
+          if (dependency.source !== null || typeof dependency.path !== "string") {
+            continue;
+          }
+          const dependencyName = dependency.name;
+          const target = publishableByName.get(dependencyName);
+          if (target === undefined) {
+            continue;
+          }
+          if (!caretIncludes(dependency.req, target.version)) {
+            fail(
+              `${cargoPackage.name} publishable path dependency ${dependencyName} ${dependency.req} does not match ${target.version}`,
+            );
+          }
+        }
+      }
+    }
+  };
+
+  const assertSpdxHeaders = (policy = {}) => {
+    const {
+      extensions = [".md", ".mjs", ".proto", ".py", ".rs", ".sh", ".toml", ".yaml", ".yml"],
+      names = [".gitignore"],
+      excludedPrefixes = [],
+      copyright =
+        "SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved",
+      license = "SPDX-License-Identifier: Apache-2.0",
+    } = policy;
+    for (const [policyName, values] of [
+      ["extensions", extensions],
+      ["names", names],
+      ["excluded prefixes", excludedPrefixes],
+    ]) {
+      if (!Array.isArray(values) || values.some((value) => typeof value !== "string")) {
+        fail(`SPDX ${policyName} policy must be an array of strings`);
+      }
+    }
+    const extensionSet = new Set(extensions);
+    const nameSet = new Set(names);
+    for (const path of loadTrackedFiles()) {
+      if (excludedPrefixes.some((prefix) => pathIsInside(path, prefix))) {
+        continue;
+      }
+      const fileName = path.slice(path.lastIndexOf("/") + 1);
+      if (!nameSet.has(fileName) && !extensionSet.has(extname(fileName))) {
+        continue;
+      }
+      const text = readText(path);
+      if (!text.includes(copyright)) {
+        fail(`${path} is missing the ReallyMe SPDX copyright header`);
+      }
+      if (!text.includes(license)) {
+        fail(`${path} is missing the Apache-2.0 SPDX license header`);
+      }
+    }
+  };
+
   const snapshotDirectory = (path) => {
     const directory = assertRepositoryDirectory(path);
     const snapshot = new Map();
@@ -772,6 +907,7 @@ export function createReleaseReadinessContext(options) {
       requiredViewNeedles = [],
       requiredCargoNeedles = [],
       secretByteFields = [],
+      additionalGeneratedPolicies = [],
     } = policy ?? {};
 
     if (typeof hardeningScript !== "string" || hardeningScript.length === 0) {
@@ -814,6 +950,9 @@ export function createReleaseReadinessContext(options) {
     }
     if (secretByteFields.length === 0) {
       fail("generated proto hardening policy requires declared secret byte fields");
+    }
+    if (!Array.isArray(additionalGeneratedPolicies)) {
+      fail("additional generated hardening policies must be an array");
     }
     for (const [policyName, value] of [
       ["generated view", generatedView],
@@ -881,6 +1020,9 @@ export function createReleaseReadinessContext(options) {
       for (const needle of requiredCargoNeedles) {
         assertContains(protoCargo, needle);
       }
+    }
+    for (const generatedPolicy of additionalGeneratedPolicies) {
+      assertTextPolicy({ files: [generatedPolicy] });
     }
     if (
       typeof workflow === "string" &&
@@ -1369,6 +1511,7 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     assertPackageFiles,
     assertCargoMetadataDocument,
     assertCargoMetadataPolicy,
+    assertCargoWorkspacePolicy,
     snapshotDirectory,
     assertSnapshotsEqual,
     validateGeneratedArtifactsPolicy,
@@ -1386,5 +1529,6 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     stripProtoLineComments,
     extractProtoBlocks,
     assertSequentialProtoContract,
+    assertSpdxHeaders,
   };
 }
