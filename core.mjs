@@ -1116,7 +1116,9 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     assertContains(corePath, "assertReallyMeProtobufReleasePolicy");
     assertContains(corePath, "assertReallyMeVendoredCorePolicy");
     assertContains(corePath, "assertCargoMetadataPolicy");
+    assertContains(corePath, "assertCargoWorkspacePolicy");
     assertContains(corePath, "assertTextPolicy");
+    assertContains(corePath, "assertSpdxHeaders");
     assertContains(corePath, "assertWorkflowActionsPinned");
     assertContains(corePath, "assertWorkflowPolicy");
     assertContains(corePath, "runCommands");
