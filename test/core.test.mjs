@@ -7,13 +7,14 @@ import {
   copyFileSync,
   mkdtempSync,
   mkdirSync,
+  readFileSync,
   realpathSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 
@@ -436,4 +437,155 @@ context.assertSpdxHeaders({ excludedPrefixes: [".github"] });`,
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /missing\.rs is missing the ReallyMe SPDX/u);
+});
+
+test("protobuf contract accepts sparse stable identifiers and rejects reserved reuse", () => {
+  const root = createFixture();
+  const context = createContext(root);
+  writeFileSync(
+    join(root, "contract.proto"),
+    `syntax = "proto3";
+enum SignatureAlgorithm {
+  SIGNATURE_ALGORITHM_UNSPECIFIED = 0;
+  reserved 1 to 99;
+  reserved "SIGNATURE_ALGORITHM_RETIRED";
+  SIGNATURE_ALGORITHM_ED25519 = 100;
+  SIGNATURE_ALGORITHM_ML_DSA_44 = 1000;
+}
+message Request {
+  reserved 2;
+  reserved "retired";
+  bytes payload = 1;
+  bytes context = 100;
+}
+`,
+  );
+
+  context.assertProtoContract("contract.proto");
+
+  writeFileSync(
+    join(root, "contract.proto"),
+    `syntax = "proto3";
+enum SignatureAlgorithm {
+  SIGNATURE_ALGORITHM_UNSPECIFIED = 0;
+  reserved 100;
+  SIGNATURE_ALGORITHM_ED25519 = 100;
+}
+`,
+  );
+  const result = runFixtureScript(
+    root,
+    'context.assertProtoContract("contract.proto");',
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /reuses reserved number 100/u);
+});
+
+test("ReallyMe protobuf boundary contract requires typed request and result envelopes", () => {
+  const root = createFixture();
+  const context = createContext(root);
+  writeFileSync(
+    join(root, "contract.proto"),
+    `syntax = "proto3";
+enum ResultStatus {
+  RESULT_STATUS_UNSPECIFIED = 0;
+  RESULT_STATUS_RESULT = 1;
+  RESULT_STATUS_ERROR = 2;
+}
+message ResultEnvelope {
+  ResultStatus status = 1;
+  bytes payload = 2;
+}
+message OperationRequest {
+  oneof operation {
+    SignRequest sign = 1;
+  }
+}
+message SignRequest {
+  bytes payload = 1;
+}
+`,
+  );
+  writeFileSync(
+    join(root, "README.md"),
+    `This crate defines messages only; it intentionally declares no protobuf service.
+JSON is a generated ProtoJSON request convenience. Results remain a binary protobuf result envelope.
+`,
+  );
+  writeFileSync(
+    join(root, "buf.gen.yaml"),
+    `version: v2
+plugins:
+  - local: protoc-gen-buffa
+    out: generated
+    opt: [views=true,json=true]
+`,
+  );
+  writeFileSync(
+    join(root, "Cargo.toml"),
+    '[features]\ngenerated = ["buffa/json", "zeroize"]\n',
+  );
+  writeFileSync(
+    join(root, "wire.rs"),
+    `use zeroize::Zeroizing;
+type Output = Zeroizing<Vec<u8>>;
+fn check(_: OperationRequest, _: ResultEnvelope) {
+    let _ = DecodeOptions::new();
+}
+pub fn process_proto() {}
+pub fn process_proto_json() {}
+fn encode_proto_result_envelope() {}
+`,
+  );
+
+  context.assertReallyMeProtoBoundaryContract({
+    protoPath: "contract.proto",
+    operationRequest: "OperationRequest",
+    resultEnvelope: "ResultEnvelope",
+    resultStatus: "ResultStatus",
+    protoReadme: "README.md",
+    protoCargo: "Cargo.toml",
+    wirePath: "wire.rs",
+  });
+});
+
+test("aggregate Rust protobuf policy rejects duplicate freshness configuration", () => {
+  const root = createFixture();
+  const result = runFixtureScript(
+    root,
+    `context.assertReallyMeRustProtoRepositoryPolicy({
+  generatedFreshnessMode: false,
+  vendoredCore: {},
+  workflowActions: {},
+  nodeWorkflows: {},
+  cargoWorkspace: {},
+  spdx: {},
+  protobufBoundary: {},
+  protobufRelease: { generatedFreshnessMode: false },
+});`,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stderr,
+    /generatedFreshnessMode must be configured once at the repository-policy level/u,
+  );
+});
+
+test("local checker template is syntactically valid and fails closed by construction", () => {
+  const templatePath = fileURLToPath(
+    new URL("../templates/check_release_readiness.mjs", import.meta.url),
+  );
+  const syntax = spawnSync(process.execPath, ["--check", templatePath], {
+    encoding: "utf8",
+  });
+  assert.equal(syntax.status, 0, syntax.stderr);
+
+  const template = readFileSync(templatePath, "utf8");
+  assert.match(template, /requireTrackedFiles: true/u);
+  assert.match(template, /assertReallyMeRustProtoRepositoryPolicy/u);
+  assert.match(template, /assertNoTemplateMarkers\(repositoryPolicy\)/u);
+  assert.match(template, /validatePublishablePathDependencies: true/u);
+  assert.match(template, /REPLACE_SECRET_BYTE_FIELD/u);
+  assert.doesNotMatch(template, /requireTrackedFiles: false/u);
 });

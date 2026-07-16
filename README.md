@@ -37,7 +37,11 @@ release scripts with helpers for:
   exclusions.
 - Validated command matrices for repository-specific release suites.
 - Protobuf generated-output freshness checks.
-- Protobuf contract checks for pre-release sequential enum and message numbering.
+- Protobuf contract checks for sparse stable identifiers, valid field-number
+  ranges, uniqueness, and reserved number/name non-reuse.
+- A common executable protobuf adapter boundary requiring messages only, no
+  service, one operation-request `oneof`, one status-plus-payload binary result
+  envelope, and generated ProtoJSON as a request convenience.
 - Generated protobuf hardening checks driven by each repo's hardening script.
 - Generated protobuf redaction and zeroization policy checks through
 `assertGeneratedProtoHardeningPolicy`.
@@ -48,6 +52,10 @@ release scripts with helpers for:
 - A vendored-core policy through `assertReallyMeVendoredCorePolicy`, so
   consumers prove the release script and shared core are both Git-tracked and on
   the expected contract version.
+- An aggregate Rust/protobuf repository baseline through
+  `assertReallyMeRustProtoRepositoryPolicy`, so new consumers cannot partially
+  apply the shared Cargo, workflow, SPDX, protobuf, ProtoJSON, hardening, and
+  generated-freshness requirements.
 
 ## Golden Standard Sources
 
@@ -59,8 +67,8 @@ consumer repositories:
 - `codec`: package-surface checks and redaction of encoded byte material.
 - `jose`: Git-tracked input enforcement, lockfile source checks, and generated
   private-key/plaintext hardening.
-- `cose`: generated snapshot freshness, sequential pre-release proto contract
-  checks, and strict generated Debug/zeroize policy.
+- `cose`: generated snapshot freshness, stable protobuf identifier and adapter
+  boundary checks, and strict generated Debug/zeroize policy.
 
 The generated protobuf lane is security-sensitive. Consumers should use
 `assertGeneratedArtifactsFresh` to snapshot generated output plus every tracked
@@ -75,9 +83,19 @@ the comparison remains exact without keeping the entire tracked worktree and
 generated tree resident in memory.
 
 For declared secret-bearing byte fields, `assertGeneratedProtoHardeningPolicy`
-also proves that generated JSON deserialization uses
-`Zeroizing<Vec<u8>>`, the generated `Drop` implementation zeroizes the field,
-and generated `Debug` output does not print `self.<field>`.
+proves that generated JSON deserialization stages bytes in a
+`Zeroizing<Vec<u8>>`, generated `clear`/`Drop` paths zeroize the final Buffa
+field owner, unknown length-delimited protobuf data is recursively wiped,
+strict ProtoJSON rejects unknown keys, and generated `Debug` output does not
+print `self.<field>`. Buffa's generated public field type remains `Vec<u8>`;
+the checker deliberately does not overclaim that changing the deserializer's
+temporary owner changes generated message storage.
+
+The shared adapter contract is deliberately narrower than an RPC schema. The
+proto crate owns messages only and declares no service. A binary
+`<Component>OperationRequest` or its generated ProtoJSON representation enters
+the same dispatcher, and both paths return the same binary
+`<Component>ProtoResultEnvelope`. Ergonomic native SDK APIs remain separate.
 
 ## Usage
 
@@ -95,9 +113,16 @@ Each consuming repository should assert the contract marker:
 ```js
 assertContains(
   "scripts/release-readiness/core.mjs",
-  "RELEASE_READINESS_CORE_CONTRACT_VERSION = 2",
+  "RELEASE_READINESS_CORE_CONTRACT_VERSION = 4",
 );
 ```
+
+For a new Rust/protobuf repository, start from
+[`templates/check_release_readiness.mjs`](templates/check_release_readiness.mjs)
+and follow [`templates/README.md`](templates/README.md). The template fails
+closed until every `REPLACE_*` marker is resolved. It uses the aggregate
+repository policy so the local checker stays focused on configuration and
+component-specific invariants rather than copying shared enforcement logic.
 
 When this repository becomes the canonical public source, consumers can either
 continue vendoring a reviewed copy or pin a specific Git revision. Release
@@ -198,6 +223,35 @@ assertReallyMeProtobufReleasePolicy({
   },
 });
 ```
+
+Protobuf identifiers are ReallyMe wire identifiers, not COSE, JOSE, JWA, or
+other provider registry values. Use family-scoped enums where the schema
+permits it, keep adjacent variants together in documented sparse bands, and
+reserve every retired name and number. `assertProtoContract` deliberately does
+not require sequential numbering; it rejects duplicate identifiers, invalid
+field-number ranges, and reuse of reserved names or numbers. Repository-local
+numeric contract tests and encoded goldens remain responsible for freezing the
+chosen identifiers across releases.
+
+Low-level executable adapters should also use the common typed boundary:
+
+```js
+assertReallyMeProtoBoundaryContract({
+  protoPath: "crates/proto/example/proto/reallyme/example/v1/example.proto",
+  operationRequest: "ExampleOperationRequest",
+  resultEnvelope: "ExampleProtoResultEnvelope",
+  resultStatus: "ExampleProtoResultStatus",
+  protoReadme: "crates/proto/example/README.md",
+  protoCargo: "crates/proto/example/Cargo.toml",
+  wirePath: "src/wire.rs",
+});
+```
+
+The operation request must carry a `oneof operation`; the result envelope must
+carry its typed status at field 1 and `bytes payload` at field 2. The schema
+must declare messages only and no protobuf service. The generated ProtoJSON
+entrypoint is a request convenience and returns the same binary result envelope
+as the binary protobuf entrypoint.
 
 In delegated mode, the workflow installs the pinned toolchain and invokes only
 the repository checker:

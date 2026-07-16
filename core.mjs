@@ -11,7 +11,7 @@ import { spawnSync } from "node:child_process";
 // This module is intentionally written as a standalone, vendorable release
 // readiness core. Sister repositories should copy it byte-for-byte or consume a
 // pinned upstream revision so release-critical checks do not drift silently.
-export const RELEASE_READINESS_CORE_CONTRACT_VERSION = 2;
+export const RELEASE_READINESS_CORE_CONTRACT_VERSION = 4;
 
 const DEFAULT_FAILURE_PREFIX = "release readiness check failed";
 
@@ -908,6 +908,8 @@ export function createReleaseReadinessContext(options) {
       requiredCargoNeedles = [],
       secretByteFields = [],
       additionalGeneratedPolicies = [],
+      requireStrictJson = true,
+      requireUnknownFieldZeroization = true,
     } = policy ?? {};
 
     if (typeof hardeningScript !== "string" || hardeningScript.length === 0) {
@@ -1000,9 +1002,22 @@ export function createReleaseReadinessContext(options) {
       assertContains(generatedRust, `.field("${field}", &"<redacted>")`);
       assertNotContains(generatedRust, `.field("${field}", &self.${field})`);
       assertContains(generatedRust, `::zeroize::Zeroize::zeroize(&mut self.${field});`);
+      // Buffa's generated message storage remains Vec<u8>. Sensitive
+      // ProtoJSON decoding must stage bytes in a zeroizing temporary, while
+      // generated clear and Drop paths wipe the final generated field owner.
       assertContains(
         generatedRust,
         `${field}: ::zeroize::Zeroizing<::buffa::alloc::vec::Vec<u8>>`,
+      );
+    }
+    if (requireStrictJson) {
+      assertContains(generatedRust, "#[serde(default, deny_unknown_fields)]");
+    }
+    if (requireUnknownFieldZeroization) {
+      assertContains(generatedRust, "fn __reallyme_zeroize_unknown_fields(");
+      assertContains(
+        generatedRust,
+        "__reallyme_zeroize_unknown_fields(&mut self.__buffa_unknown_fields);",
       );
     }
     for (const needle of requiredGeneratedNeedles) {
@@ -1115,6 +1130,7 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     assertContains(corePath, "assertGeneratedProtoHardeningPolicy");
     assertContains(corePath, "assertReallyMeProtobufReleasePolicy");
     assertContains(corePath, "assertReallyMeVendoredCorePolicy");
+    assertContains(corePath, "assertReallyMeRustProtoRepositoryPolicy");
     assertContains(corePath, "assertCargoMetadataPolicy");
     assertContains(corePath, "assertCargoWorkspacePolicy");
     assertContains(corePath, "assertTextPolicy");
@@ -1123,6 +1139,8 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     assertContains(corePath, "assertWorkflowPolicy");
     assertContains(corePath, "runCommands");
     assertContains(corePath, "secretByteFields");
+    assertContains(corePath, "assertProtoContract");
+    assertContains(corePath, "assertReallyMeProtoBoundaryContract");
     assertContains(corePath, "assertWorkflowRunStep");
     assertContains(corePath, "assertWorkflowUsesStep");
   };
@@ -1421,6 +1439,96 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     }
   };
 
+  const assertReallyMeRustProtoRepositoryPolicy = (policy) => {
+    if (policy === null || typeof policy !== "object" || Array.isArray(policy)) {
+      fail("ReallyMe Rust protobuf repository policy must be an object");
+    }
+    const {
+      generatedFreshnessMode,
+      vendoredCore = {},
+      workflowActions = {},
+      nodeWorkflows = {},
+      cargoWorkspace = {},
+      spdx = {},
+      protobufBoundary,
+      protobufRelease,
+      cargoMetadata,
+      text,
+      workflows = [],
+    } = policy;
+    if (typeof generatedFreshnessMode !== "boolean") {
+      fail("ReallyMe Rust protobuf repository policy requires generatedFreshnessMode");
+    }
+    for (const [name, value] of [
+      ["vendoredCore", vendoredCore],
+      ["workflowActions", workflowActions],
+      ["nodeWorkflows", nodeWorkflows],
+      ["cargoWorkspace", cargoWorkspace],
+      ["spdx", spdx],
+      ["protobufBoundary", protobufBoundary],
+      ["protobufRelease", protobufRelease],
+    ]) {
+      if (value === null || typeof value !== "object" || Array.isArray(value)) {
+        fail(`ReallyMe Rust protobuf repository policy ${name} must be an object`);
+      }
+    }
+    if (
+      cargoMetadata !== undefined &&
+      (cargoMetadata === null ||
+        typeof cargoMetadata !== "object" ||
+        Array.isArray(cargoMetadata))
+    ) {
+      fail("ReallyMe Rust protobuf repository policy cargoMetadata must be an object");
+    }
+    if (
+      text !== undefined &&
+      (text === null || typeof text !== "object" || Array.isArray(text))
+    ) {
+      fail("ReallyMe Rust protobuf repository policy text must be an object");
+    }
+    if (
+      !Array.isArray(workflows) ||
+      workflows.some(
+        (workflow) =>
+          workflow === null ||
+          typeof workflow !== "object" ||
+          Array.isArray(workflow),
+      )
+    ) {
+      fail("ReallyMe Rust protobuf repository workflows must be an array of objects");
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(
+        protobufRelease,
+        "generatedFreshnessMode",
+      )
+    ) {
+      fail(
+        "generatedFreshnessMode must be configured once at the repository-policy level",
+      );
+    }
+
+    assertReallyMeVendoredCorePolicy(vendoredCore);
+    assertWorkflowActionsPinned(workflowActions);
+    assertNodeWorkflowJobsPinNode(nodeWorkflows);
+    assertCargoWorkspacePolicy(cargoWorkspace);
+    assertSpdxHeaders(spdx);
+    assertReallyMeProtoBoundaryContract(protobufBoundary);
+    assertReallyMeProtobufReleasePolicy({
+      ...protobufRelease,
+      generatedFreshnessMode,
+    });
+    if (cargoMetadata !== undefined) {
+      assertCargoMetadataPolicy(cargoMetadata);
+    }
+    if (text !== undefined) {
+      assertTextPolicy(text);
+    }
+    for (const workflow of workflows) {
+      assertWorkflowPolicy(workflow);
+    }
+  };
+
   const stripProtoLineComments = (text) =>
     text
       .split("\n")
@@ -1459,36 +1567,236 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     return blocks;
   };
 
-  const assertSequentialProtoContract = (path) => {
-    const proto = stripProtoLineComments(readText(path));
-    if (/\breserved\b/.test(proto)) {
-      fail(`${path} must not reserve field numbers or names before first release`);
+  const parseProtoReservations = (path, ownerKind, ownerName, body) => {
+    const numberRanges = [];
+    const names = new Set();
+    for (const declaration of body.matchAll(/\breserved\s+([^;]+);/gu)) {
+      for (const rawEntry of declaration[1].split(",")) {
+        const entry = rawEntry.trim();
+        const nameMatch = /^"([A-Za-z_][A-Za-z0-9_]*)"$/u.exec(entry);
+        if (nameMatch !== null) {
+          if (names.has(nameMatch[1])) {
+            fail(`${path} ${ownerKind} ${ownerName} reserves name ${nameMatch[1]} more than once`);
+          }
+          names.add(nameMatch[1]);
+          continue;
+        }
+        const rangeMatch = /^(-?\d+)(?:\s+to\s+(-?\d+|max))?$/u.exec(entry);
+        if (rangeMatch === null) {
+          fail(`${path} ${ownerKind} ${ownerName} has unsupported reservation ${entry}`);
+        }
+        const start = Number.parseInt(rangeMatch[1], 10);
+        const end =
+          rangeMatch[2] === undefined
+            ? start
+            : rangeMatch[2] === "max"
+              ? ownerKind === "message"
+                ? 536_870_911
+                : 2_147_483_647
+              : Number.parseInt(rangeMatch[2], 10);
+        if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end) {
+          fail(`${path} ${ownerKind} ${ownerName} has invalid reservation ${entry}`);
+        }
+        if (
+          numberRanges.some(
+            ([existingStart, existingEnd]) =>
+              start <= existingEnd && end >= existingStart,
+          )
+        ) {
+          fail(`${path} ${ownerKind} ${ownerName} has overlapping reserved number ranges`);
+        }
+        numberRanges.push([start, end]);
+      }
     }
+    return { numberRanges, names };
+  };
+
+  const isReservedProtoNumber = (number, reservations) =>
+    reservations.numberRanges.some(([start, end]) => number >= start && number <= end);
+
+  const assertProtoContract = (path) => {
+    const proto = stripProtoLineComments(readText(path));
 
     for (const block of extractProtoBlocks(proto, "enum")) {
-      const values = [...block.body.matchAll(/^\s*[A-Z][A-Z0-9_]*\s*=\s*(\d+)\s*;/gm)].map(
-        (match) => Number.parseInt(match[1], 10),
-      );
-      values.forEach((value, index) => {
-        if (value !== index) {
-          fail(`${path} enum ${block.name} value ${index} must be ${index}, found ${value}`);
+      const reservations = parseProtoReservations(path, "enum", block.name, block.body);
+      const names = new Set();
+      const numbers = new Set();
+      const values = [
+        ...block.body.matchAll(
+          /^\s*([A-Z][A-Z0-9_]*)\s*=\s*(-?\d+)\s*(?:\[[^\]]*\])?\s*;/gmu,
+        ),
+      ].map((match) => ({
+        name: match[1],
+        number: Number.parseInt(match[2], 10),
+      }));
+      if (values.length === 0) {
+        fail(`${path} enum ${block.name} must define at least one value`);
+      }
+      if (values[0].number !== 0 || !values[0].name.endsWith("_UNSPECIFIED")) {
+        fail(`${path} enum ${block.name} must start with an UNSPECIFIED value at zero`);
+      }
+      for (const value of values) {
+        if (
+          !Number.isSafeInteger(value.number) ||
+          value.number < -2_147_483_648 ||
+          value.number > 2_147_483_647
+        ) {
+          fail(`${path} enum ${block.name} value ${value.name} is outside int32 range`);
         }
-      });
+        if (names.has(value.name)) {
+          fail(`${path} enum ${block.name} defines name ${value.name} more than once`);
+        }
+        if (numbers.has(value.number)) {
+          fail(`${path} enum ${block.name} reuses number ${value.number}`);
+        }
+        if (reservations.names.has(value.name)) {
+          fail(`${path} enum ${block.name} reuses reserved name ${value.name}`);
+        }
+        if (isReservedProtoNumber(value.number, reservations)) {
+          fail(`${path} enum ${block.name} reuses reserved number ${value.number}`);
+        }
+        names.add(value.name);
+        numbers.add(value.number);
+      }
     }
 
     for (const block of extractProtoBlocks(proto, "message")) {
-      const values = [
+      const reservations = parseProtoReservations(path, "message", block.name, block.body);
+      const names = new Set();
+      const numbers = new Set();
+      const fields = [
         ...block.body.matchAll(
-          /^\s*(?:optional\s+|repeated\s+)?(?:[A-Za-z_][A-Za-z0-9_.<>]*\s+)+[A-Za-z_][A-Za-z0-9_]*\s*=\s*(\d+)\s*;/gm,
+          /^\s*(?:optional\s+|repeated\s+)?(?:map\s*<[^>]+>|[A-Za-z_][A-Za-z0-9_.]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d+)\s*(?:\[[^\]]*\])?\s*;/gmu,
         ),
-      ].map((match) => Number.parseInt(match[1], 10));
-      values.forEach((value, index) => {
-        const expected = index + 1;
-        if (value !== expected) {
-          fail(`${path} message ${block.name} field ${expected} must be ${expected}, found ${value}`);
+      ].map((match) => ({
+        name: match[1],
+        number: Number.parseInt(match[2], 10),
+      }));
+      for (const field of fields) {
+        if (
+          !Number.isSafeInteger(field.number) ||
+          field.number < 1 ||
+          field.number > 536_870_911 ||
+          (field.number >= 19_000 && field.number <= 19_999)
+        ) {
+          fail(`${path} message ${block.name} field ${field.name} has invalid number ${field.number}`);
         }
-      });
+        if (names.has(field.name)) {
+          fail(`${path} message ${block.name} defines field ${field.name} more than once`);
+        }
+        if (numbers.has(field.number)) {
+          fail(`${path} message ${block.name} reuses field number ${field.number}`);
+        }
+        if (reservations.names.has(field.name)) {
+          fail(`${path} message ${block.name} reuses reserved name ${field.name}`);
+        }
+        if (isReservedProtoNumber(field.number, reservations)) {
+          fail(`${path} message ${block.name} reuses reserved field number ${field.number}`);
+        }
+        names.add(field.name);
+        numbers.add(field.number);
+      }
     }
+  };
+
+  const assertReallyMeProtoBoundaryContract = (policy) => {
+    const {
+      protoPath,
+      operationRequest,
+      resultEnvelope,
+      resultStatus,
+      payloadField = "payload",
+      protoReadme,
+      protoCargo,
+      wirePath,
+      codecPath = wirePath,
+      bufGen = "buf.gen.yaml",
+      processProtoNeedle = "pub fn process_proto(",
+      processProtoJsonNeedle = "pub fn process_proto_json(",
+      binaryEnvelopeNeedle = "encode_proto_result_envelope",
+    } = policy ?? {};
+    for (const [name, value] of Object.entries({
+      protoPath,
+      protoReadme,
+      protoCargo,
+      wirePath,
+      codecPath,
+    })) {
+      if (typeof value !== "string" || value.length === 0) {
+        fail(`protobuf boundary policy ${name} must be a non-empty string`);
+      }
+    }
+    for (const [name, value] of Object.entries({
+      operationRequest,
+      resultEnvelope,
+      resultStatus,
+    })) {
+      if (
+        typeof value !== "string" ||
+        !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(value)
+      ) {
+        fail(`protobuf boundary policy ${name} must be a protobuf identifier`);
+      }
+    }
+
+    assertProtoContract(protoPath);
+    const proto = stripProtoLineComments(readText(protoPath));
+    if (extractProtoBlocks(proto, "service").length !== 0) {
+      fail(`${protoPath} must define messages only and no protobuf service`);
+    }
+    const operationBlock = extractProtoBlocks(proto, "message").find(
+      (block) => block.name === operationRequest,
+    );
+    if (operationBlock === undefined || !/\boneof\s+operation\s*\{/u.test(operationBlock.body)) {
+      fail(`${protoPath} ${operationRequest} must define oneof operation`);
+    }
+    const envelopeBlock = extractProtoBlocks(proto, "message").find(
+      (block) => block.name === resultEnvelope,
+    );
+    if (envelopeBlock === undefined) {
+      fail(`${protoPath} must define message ${resultEnvelope}`);
+    }
+    if (
+      !new RegExp(`^\\s*${resultStatus}\\s+status\\s*=\\s*1\\s*;`, "mu").test(
+        envelopeBlock.body,
+      ) ||
+      !new RegExp(`^\\s*bytes\\s+${payloadField}\\s*=\\s*2\\s*;`, "mu").test(
+        envelopeBlock.body,
+      )
+    ) {
+      fail(
+        `${protoPath} ${resultEnvelope} must contain status = 1 and bytes ${payloadField} = 2`,
+      );
+    }
+    if (
+      !extractProtoBlocks(proto, "enum").some((block) => block.name === resultStatus)
+    ) {
+      fail(`${protoPath} must define enum ${resultStatus}`);
+    }
+
+    assertContains(
+      protoReadme,
+      "This crate defines messages only; it intentionally declares no protobuf service.",
+    );
+    assertContains(
+      protoReadme,
+      "JSON is a generated ProtoJSON request convenience. Results remain a binary protobuf result envelope.",
+    );
+    assertContains(bufGen, "local: protoc-gen-buffa");
+    assertContains(bufGen, "views=true");
+    assertContains(bufGen, "json=true");
+    assertContains(protoCargo, '"buffa/json"');
+    assertContains(protoCargo, "zeroize");
+    assertContains(wirePath, operationRequest);
+    assertContains(wirePath, resultEnvelope);
+    assertContains(wirePath, "Zeroizing<Vec<u8>>");
+    assertContains(wirePath, processProtoNeedle);
+    assertContains(wirePath, processProtoJsonNeedle);
+    assertContains(codecPath, "DecodeOptions::new()");
+    assertContains(codecPath, binaryEnvelopeNeedle);
+    assertNotContains(wirePath, "pub fn process_json(");
+    assertNotContains(wirePath, "pub fn process_proto_with_operation");
+    assertNotContains(wirePath, "pub fn process_proto_operation");
   };
 
   return {
@@ -1523,6 +1831,7 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     assertReallyMeVendoredCorePolicy,
     assertNodeWorkflowJobsPinNode,
     assertWorkflowActionsPinned,
+    assertReallyMeRustProtoRepositoryPolicy,
     normalizeWorkflowRunCommand,
     extractWorkflowSteps,
     assertWorkflowRunStep,
@@ -1530,7 +1839,8 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     assertWorkflowPolicy,
     stripProtoLineComments,
     extractProtoBlocks,
-    assertSequentialProtoContract,
+    assertProtoContract,
+    assertReallyMeProtoBoundaryContract,
     assertSpdxHeaders,
   };
 }

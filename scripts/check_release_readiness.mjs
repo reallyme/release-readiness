@@ -20,11 +20,12 @@ if (packageJson.name !== "@reallyme/release-readiness") {
   fail("package name must remain @reallyme/release-readiness");
 }
 
-assertContains("core.mjs", "RELEASE_READINESS_CORE_CONTRACT_VERSION = 2");
+assertContains("core.mjs", "RELEASE_READINESS_CORE_CONTRACT_VERSION = 4");
 assertContains("core.mjs", "assertGeneratedArtifactsFresh");
 assertContains("core.mjs", "assertGeneratedProtoHardeningPolicy");
 assertContains("core.mjs", "assertReallyMeProtobufReleasePolicy");
 assertContains("core.mjs", "assertReallyMeVendoredCorePolicy");
+assertContains("core.mjs", "assertReallyMeRustProtoRepositoryPolicy");
 assertContains("core.mjs", "assertCargoMetadataPolicy");
 assertContains("core.mjs", "assertCargoWorkspacePolicy");
 assertContains("core.mjs", "assertTextPolicy");
@@ -38,7 +39,8 @@ assertContains("core.mjs", "assertSnapshotsEqual");
 assertContains("core.mjs", "snapshotRepositoryFilesOutside");
 assertContains("core.mjs", "assertRepositorySnapshotsEqual");
 assertContains("core.mjs", 'createHash("sha256")');
-assertContains("core.mjs", "assertSequentialProtoContract");
+assertContains("core.mjs", "assertProtoContract");
+assertContains("core.mjs", "assertReallyMeProtoBoundaryContract");
 assertContains("core.mjs", "assertNodeWorkflowJobsPinNode");
 assertContains("core.mjs", "assertWorkflowRunStep");
 assertContains("core.mjs", "assertWorkflowUsesStep");
@@ -47,6 +49,32 @@ assertContains("core.mjs", "assertPackageFiles");
 assertContains("README.md", "Generated protobuf hardening checks");
 assertContains("README.md", "buf generate");
 assertContains("README.md", "harden-generated-example-proto.mjs");
-assertContains("README.md", "RELEASE_READINESS_CORE_CONTRACT_VERSION = 2");
+assertContains("README.md", "RELEASE_READINESS_CORE_CONTRACT_VERSION = 4");
 assertContains("README.md", "outside the declared generated directories");
+assertContains("README.md", "sparse stable identifiers");
+assertContains("README.md", "templates/check_release_readiness.mjs");
+assertContains(
+  "templates/check_release_readiness.mjs",
+  "assertReallyMeRustProtoRepositoryPolicy",
+);
+assertContains(
+  "templates/check_release_readiness.mjs",
+  "requireTrackedFiles: true",
+);
+assertContains(
+  "templates/check_release_readiness.mjs",
+  "assertNoTemplateMarkers(repositoryPolicy)",
+);
+assertContains(
+  "templates/check_release_readiness.mjs",
+  "validatePublishablePathDependencies: true",
+);
+assertContains(
+  "templates/check_release_readiness.mjs",
+  "node scripts/check_release_readiness.mjs --generated-freshness",
+);
+assertNotContains(
+  "templates/check_release_readiness.mjs",
+  "requireTrackedFiles: false",
+);
 assertNotContains("core.mjs", 'from "yaml"');
