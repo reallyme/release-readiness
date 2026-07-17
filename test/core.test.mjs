@@ -332,6 +332,54 @@ jobs:
   assert.match(result.stderr, /configured exact Git revision/u);
 });
 
+test("cargo-fuzz workflow policy rejects ambiguous or prefix-matched sources", () => {
+  const root = createFixture();
+  writeFileSync(
+    join(root, ".github", "workflows", "fuzz.yml"),
+    `name: Fuzz
+jobs:
+  immediate:
+    steps:
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.13.20 --locked
+  scheduled:
+    steps:
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.13.20 --locked
+`,
+  );
+  const prefixResult = runFixtureScript(
+    root,
+    'context.assertCargoFuzzWorkflowPolicy({ version: "0.13.2" });',
+  );
+  assert.equal(prefixResult.status, 1);
+  assert.match(prefixResult.stderr, /must pin version 0\.13\.2/u);
+
+  writeFileSync(
+    join(root, ".github", "workflows", "fuzz.yml"),
+    `name: Fuzz
+jobs:
+  immediate:
+    steps:
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+  scheduled:
+    steps:
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+`,
+  );
+  const ambiguousResult = runFixtureScript(
+    root,
+    `context.assertCargoFuzzWorkflowPolicy({
+  version: "0.13.2",
+  gitSource: { url: "not-a-github-url", revision: "not-a-sha" },
+});`,
+  );
+  assert.equal(ambiguousResult.status, 1);
+  assert.match(ambiguousResult.stderr, /exactly one exact version or Git revision/u);
+});
+
 test("workflow permissions policy validates exact scopes by structural location", () => {
   const root = createFixture();
   const workflow = join(root, ".github", "workflows", "release.yml");

@@ -1820,17 +1820,29 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     if (typeof workflow !== "string" || workflow.length === 0) {
       fail("cargo-fuzz workflow policy requires a workflow path");
     }
-    const hasVersion = typeof version === "string" && /^\d+\.\d+\.\d+$/u.test(version);
-    const hasGitSource =
-      gitSource !== null &&
-      typeof gitSource === "object" &&
-      !Array.isArray(gitSource) &&
-      typeof gitSource.url === "string" &&
-      /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.git$/u.test(gitSource.url) &&
-      typeof gitSource.revision === "string" &&
-      /^[0-9a-f]{40}$/u.test(gitSource.revision);
-    if (hasVersion === hasGitSource) {
+    const configuredSources = [
+      Object.prototype.hasOwnProperty.call(policy ?? {}, "version"),
+      Object.prototype.hasOwnProperty.call(policy ?? {}, "gitSource"),
+    ].filter(Boolean).length;
+    if (configuredSources !== 1) {
       fail("cargo-fuzz workflow policy requires exactly one exact version or Git revision");
+    }
+    const hasVersion = Object.prototype.hasOwnProperty.call(policy ?? {}, "version");
+    if (hasVersion && (typeof version !== "string" || !/^\d+\.\d+\.\d+$/u.test(version))) {
+      fail("cargo-fuzz workflow policy requires an exact semantic version");
+    }
+    const hasGitSource = Object.prototype.hasOwnProperty.call(policy ?? {}, "gitSource");
+    if (
+      hasGitSource &&
+      (gitSource === null ||
+        typeof gitSource !== "object" ||
+        Array.isArray(gitSource) ||
+        typeof gitSource.url !== "string" ||
+        !/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.git$/u.test(gitSource.url) ||
+        typeof gitSource.revision !== "string" ||
+        !/^[0-9a-f]{40}$/u.test(gitSource.revision))
+    ) {
+      fail("cargo-fuzz workflow policy requires an exact GitHub repository URL and revision");
     }
     if (!Number.isSafeInteger(minimumInstallations) || minimumInstallations < 1) {
       fail("cargo-fuzz workflow policy requires a positive installation count");
@@ -1908,7 +1920,10 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
         }
         continue;
       }
-      const usesLiteralVersion = command.includes(`--version ${version}`);
+      const usesLiteralVersion = new RegExp(
+        `(?:^|\\s)--version\\s+${version.replaceAll(".", "\\.")}(?:\\s|$)`,
+        "u",
+      ).test(command);
       const usesEnvironmentVersion =
         command.includes('--version "$CARGO_FUZZ_VERSION"') ||
         command.includes("--version '$CARGO_FUZZ_VERSION'") ||
