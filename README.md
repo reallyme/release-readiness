@@ -19,6 +19,9 @@ runner so policy fixes do not remain trapped in stale local copies.
 
 - Git-tracked release inputs and repository-contained paths.
 - GitHub Actions pinned to full commit SHAs, with Node jobs pinned to Node 24.
+- Workflow permissions matched structurally at the workflow and job scopes, and
+  release-critical named steps matched as complete commands rather than loose
+  substrings.
 - Cargo workspace metadata, package surfaces, dependency sources, and publish
   policy.
 - SPDX headers for tracked source files.

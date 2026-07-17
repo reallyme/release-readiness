@@ -1534,6 +1534,128 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     }));
   };
 
+  const parseWorkflowPermissionBlock = (path, lines, headerIndex, headerIndent, label) => {
+    const permissions = new Map();
+    for (let index = headerIndex + 1; index < lines.length; index += 1) {
+      const line = lines[index];
+      const trimmed = line.trim();
+      if (trimmed.length === 0 || trimmed.startsWith("#")) {
+        continue;
+      }
+      const indent = countLeadingSpaces(line);
+      if (indent <= headerIndent) {
+        break;
+      }
+      const match = /^\s*([A-Za-z0-9_-]+):\s*(read|write|none)\s*(?:#.*)?$/u.exec(line);
+      if (indent !== headerIndent + 2 || match === null) {
+        fail(`${path} ${label} permissions must be a flat explicit mapping`);
+      }
+      if (permissions.has(match[1])) {
+        fail(`${path} ${label} permission ${match[1]} is defined more than once`);
+      }
+      permissions.set(match[1], match[2]);
+    }
+    if (permissions.size === 0) {
+      fail(`${path} ${label} permissions mapping must not be empty`);
+    }
+    return permissions;
+  };
+
+  const validateExpectedPermissions = (path, label, value) => {
+    if (
+      value === null ||
+      typeof value !== "object" ||
+      Array.isArray(value) ||
+      Object.entries(value).some(
+        ([scope, access]) =>
+          !/^[A-Za-z0-9_-]+$/u.test(scope) ||
+          !["read", "write", "none"].includes(access),
+      )
+    ) {
+      fail(`${path} ${label} expected permissions must be an explicit mapping`);
+    }
+    return new Map(Object.entries(value));
+  };
+
+  const assertPermissionMapsEqual = (path, label, actual, expected) => {
+    if (
+      actual.size !== expected.size ||
+      [...expected].some(([scope, access]) => actual.get(scope) !== access)
+    ) {
+      fail(`${path} ${label} permissions changed`);
+    }
+  };
+
+  const assertWorkflowPermissionsPolicy = (policy) => {
+    const { path, workflow, jobs = {} } = policy ?? {};
+    if (typeof path !== "string" || path.length === 0) {
+      fail("workflow permissions policy requires a path");
+    }
+    const expectedWorkflow = validateExpectedPermissions(path, "workflow", workflow);
+    if (jobs === null || typeof jobs !== "object" || Array.isArray(jobs)) {
+      fail(`${path} expected job permissions must be an explicit mapping`);
+    }
+
+    const lines = readText(path).replace(/\r\n/gu, "\n").split("\n");
+    const workflowHeaders = lines
+      .map((line, index) => ({ index, matches: /^permissions:\s*$/u.test(line) }))
+      .filter((entry) => entry.matches);
+    if (workflowHeaders.length !== 1) {
+      fail(`${path} must define exactly one top-level permissions mapping`);
+    }
+    const actualWorkflow = parseWorkflowPermissionBlock(
+      path,
+      lines,
+      workflowHeaders[0].index,
+      0,
+      "workflow",
+    );
+    assertPermissionMapsEqual(path, "workflow", actualWorkflow, expectedWorkflow);
+
+    const actualJobs = new Map();
+    for (const job of extractWorkflowJobs(path)) {
+      const headers = [];
+      for (let index = job.start + 1; index < job.end; index += 1) {
+        if (/^ {4}permissions:\s*$/u.test(lines[index])) {
+          headers.push(index);
+        }
+      }
+      if (headers.length > 1) {
+        fail(`${path} job ${job.name} defines permissions more than once`);
+      }
+      if (headers.length === 1) {
+        actualJobs.set(
+          job.name,
+          parseWorkflowPermissionBlock(path, lines, headers[0], 4, `job ${job.name}`),
+        );
+      }
+    }
+
+    const expectedJobs = new Map();
+    for (const [jobName, permissions] of Object.entries(jobs)) {
+      if (!/^[A-Za-z0-9_-]+$/u.test(jobName)) {
+        fail(`${path} expected job permission name is invalid`);
+      }
+      expectedJobs.set(
+        jobName,
+        validateExpectedPermissions(path, `job ${jobName}`, permissions),
+      );
+    }
+    if (
+      actualJobs.size !== expectedJobs.size ||
+      [...actualJobs.keys()].some((jobName) => !expectedJobs.has(jobName))
+    ) {
+      fail(`${path} jobs with explicit permissions changed`);
+    }
+    for (const [jobName, expected] of expectedJobs) {
+      const actual = actualJobs.get(jobName);
+      if (actual === undefined) {
+        fail(`${path} job ${jobName} is missing explicit permissions`);
+      }
+      assertPermissionMapsEqual(path, `job ${jobName}`, actual, expected);
+    }
+  };
+
   const extractWorkflowSteps = (path) => {
     const jobs = extractWorkflowJobs(path);
     if (jobs.length === 0) {
@@ -1691,14 +1813,24 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     const {
       workflow = ".github/workflows/fuzz.yml",
       version,
+      gitSource,
       minimumInstallations = 2,
       requiredInstallSteps = [],
     } = policy ?? {};
     if (typeof workflow !== "string" || workflow.length === 0) {
       fail("cargo-fuzz workflow policy requires a workflow path");
     }
-    if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/u.test(version)) {
-      fail("cargo-fuzz workflow policy requires an exact semantic version");
+    const hasVersion = typeof version === "string" && /^\d+\.\d+\.\d+$/u.test(version);
+    const hasGitSource =
+      gitSource !== null &&
+      typeof gitSource === "object" &&
+      !Array.isArray(gitSource) &&
+      typeof gitSource.url === "string" &&
+      /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.git$/u.test(gitSource.url) &&
+      typeof gitSource.revision === "string" &&
+      /^[0-9a-f]{40}$/u.test(gitSource.revision);
+    if (hasVersion === hasGitSource) {
+      fail("cargo-fuzz workflow policy requires exactly one exact version or Git revision");
     }
     if (!Number.isSafeInteger(minimumInstallations) || minimumInstallations < 1) {
       fail("cargo-fuzz workflow policy requires a positive installation count");
@@ -1725,17 +1857,23 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
         step.run !== null &&
         normalizeWorkflowRunCommand(step.run)
           .split("\n")
-          .some((line) => /^cargo\s+install\s+cargo-fuzz(?:\s|$)/u.test(line.trim())),
+          .some(
+            (line) =>
+              /^cargo\s+install(?:\s|$)/u.test(line.trim()) &&
+              /(?:^|\s)cargo-fuzz(?:\s|$)/u.test(line.trim()),
+          ),
     );
     if (installSteps.length < minimumInstallations) {
       fail(
         `${workflow} must install cargo-fuzz at least ${minimumInstallations} times`,
       );
     }
-    const environmentVersion = new RegExp(
-      `^\\s*CARGO_FUZZ_VERSION:\\s*["']?${version.replaceAll(".", "\\.")}["']?\\s*$`,
-      "mu",
-    );
+    const environmentVersion = hasVersion
+      ? new RegExp(
+          `^\\s*CARGO_FUZZ_VERSION:\\s*["']?${version.replaceAll(".", "\\.")}["']?\\s*$`,
+          "mu",
+        )
+      : null;
     for (const expected of requiredInstallSteps) {
       const matches = installSteps.filter(
         (step) =>
@@ -1762,6 +1900,14 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
       if (!/(?:^|\s)--locked(?:\s|$)/u.test(command)) {
         fail(`${workflow} cargo-fuzz installation must use --locked`);
       }
+      if (hasGitSource) {
+        const expected =
+          `cargo install --git ${gitSource.url} --rev ${gitSource.revision} --locked cargo-fuzz`;
+        if (command !== expected) {
+          fail(`${workflow} cargo-fuzz installation must use the configured exact Git revision`);
+        }
+        continue;
+      }
       const usesLiteralVersion = command.includes(`--version ${version}`);
       const usesEnvironmentVersion =
         command.includes('--version "$CARGO_FUZZ_VERSION"') ||
@@ -1769,7 +1915,7 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
         command.includes("--version $CARGO_FUZZ_VERSION");
       if (
         !usesLiteralVersion &&
-        !(usesEnvironmentVersion && environmentVersion.test(text))
+        !(usesEnvironmentVersion && environmentVersion !== null && environmentVersion.test(text))
       ) {
         fail(
           `${workflow} cargo-fuzz installation must pin version ${version}`,
@@ -2248,6 +2394,7 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     assertReallyMeVendoredCorePolicy,
     assertNodeWorkflowJobsPinNode,
     assertWorkflowActionsPinned,
+    assertWorkflowPermissionsPolicy,
     assertCargoFuzzWorkflowPolicy,
     assertReallyMeRustProtoRepositoryPolicy,
     normalizeWorkflowRunCommand,

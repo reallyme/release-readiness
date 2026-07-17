@@ -50,6 +50,7 @@ assertContains("core.mjs", "assertCargoWorkspacePolicy");
 assertContains("core.mjs", "assertTextPolicy");
 assertContains("core.mjs", "assertWorkflowActionsPinned");
 assertContains("core.mjs", "assertWorkflowPolicy");
+assertContains("core.mjs", "assertWorkflowPermissionsPolicy");
 assertContains("core.mjs", "assertSpdxHeaders");
 assertContains("core.mjs", "runCommands");
 assertContains("core.mjs", "scalarFieldClassifications");

@@ -294,6 +294,92 @@ jobs:
   assert.match(result.stderr, /must install cargo-fuzz at least 2 times/u);
 });
 
+test("cargo-fuzz workflow policy accepts only the configured immutable Git source", () => {
+  const root = createFixture();
+  const revision = "9".repeat(40);
+  writeFileSync(
+    join(root, ".github", "workflows", "fuzz.yml"),
+    `name: Fuzz
+jobs:
+  immediate:
+    steps:
+      - name: Install cargo-fuzz
+        run: cargo install --git https://github.com/rust-fuzz/cargo-fuzz.git --rev ${revision} --locked cargo-fuzz
+  scheduled:
+    steps:
+      - name: Install cargo-fuzz
+        run: cargo install --git https://github.com/rust-fuzz/cargo-fuzz.git --rev ${revision} --locked cargo-fuzz
+`,
+  );
+  const context = createContext(root);
+  context.assertCargoFuzzWorkflowPolicy({
+    gitSource: {
+      url: "https://github.com/rust-fuzz/cargo-fuzz.git",
+      revision,
+    },
+  });
+
+  const result = runFixtureScript(
+    root,
+    `context.assertCargoFuzzWorkflowPolicy({
+  gitSource: {
+    url: "https://github.com/rust-fuzz/cargo-fuzz.git",
+    revision: "${"8".repeat(40)}",
+  },
+});`,
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /configured exact Git revision/u);
+});
+
+test("workflow permissions policy validates exact scopes by structural location", () => {
+  const root = createFixture();
+  const workflow = join(root, ".github", "workflows", "release.yml");
+  writeFileSync(
+    workflow,
+    `name: Release
+permissions:
+  contents: read
+jobs:
+  verify:
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Note
+        run: echo "permissions: contents write"
+  publish:
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Publish
+        run: true
+`,
+  );
+  const context = createContext(root);
+  const policy = {
+    path: ".github/workflows/release.yml",
+    workflow: { contents: "read" },
+    jobs: {
+      verify: { actions: "read", contents: "read" },
+      publish: { actions: "read", contents: "write" },
+    },
+  };
+  context.assertWorkflowPermissionsPolicy(policy);
+
+  writeFileSync(
+    workflow,
+    readFileSync(workflow, "utf8").replace("      contents: write", "      packages: write"),
+  );
+  const result = runFixtureScript(
+    root,
+    `context.assertWorkflowPermissionsPolicy(${JSON.stringify(policy)});`,
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /permissions changed/u);
+});
+
 test("Node workflow policy detects corepack-based Node tooling", () => {
   const root = createFixture();
   writeFileSync(
