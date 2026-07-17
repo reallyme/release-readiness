@@ -74,6 +74,7 @@ const repositoryPolicy = {
       "bufbuild/buf-setup-action@REPLACE_BUF_SETUP_ACTION_FULL_COMMIT_SHA",
     hardeningPolicy: {
       hardeningScript: "REPLACE_HARDENING_SCRIPT",
+      protoSchema: "REPLACE_PROTO_SCHEMA",
       generatedRust: "REPLACE_GENERATED_RUST_FILE",
       generatedView: "REPLACE_GENERATED_VIEW_FILE",
       protoCargo: "REPLACE_PROTO_CARGO",
@@ -85,7 +86,15 @@ const repositoryPolicy = {
       ],
       forbiddenScriptNeedles: [],
       requiredCargoNeedles: ['"buffa/json"', "zeroize"],
-      secretByteFields: ["REPLACE_SECRET_BYTE_FIELD"],
+      // Every bytes/string field in the schema must appear exactly once.
+      scalarFieldClassifications: [
+        {
+          message: "REPLACE_MESSAGE",
+          field: "REPLACE_SECRET_BYTE_FIELD",
+          kind: "bytes",
+          sensitivity: "sensitive",
+        },
+      ],
       requiredGeneratedNeedles: [
         '.field("REPLACE_SECRET_BYTE_FIELD", &"<redacted>")',
         "::zeroize::Zeroize::zeroize(&mut self.REPLACE_SECRET_BYTE_FIELD);",

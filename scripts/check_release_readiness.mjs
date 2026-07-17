@@ -33,7 +33,7 @@ for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]
   }
 }
 
-assertContains("core.mjs", "RELEASE_READINESS_CORE_CONTRACT_VERSION = 6");
+assertContains("core.mjs", "RELEASE_READINESS_CORE_CONTRACT_VERSION = 7");
 assertContains("package.json", '"reallyme-release-readiness": "scripts/run-consumer-check.mjs"');
 assertContains("scripts/run-consumer-check.mjs", "timingSafeEqual");
 assertContains("scripts/run-consumer-check.mjs", "shared core does not match the pinned package");
@@ -52,7 +52,7 @@ assertContains("core.mjs", "assertWorkflowActionsPinned");
 assertContains("core.mjs", "assertWorkflowPolicy");
 assertContains("core.mjs", "assertSpdxHeaders");
 assertContains("core.mjs", "runCommands");
-assertContains("core.mjs", "secretByteFields");
+assertContains("core.mjs", "scalarFieldClassifications");
 assertContains("core.mjs", "snapshotDirectory");
 assertContains("core.mjs", "assertSnapshotsEqual");
 assertContains("core.mjs", "snapshotRepositoryFilesOutside");
@@ -83,10 +83,13 @@ assertContains("README.md", "Generated protobuf hardening checks");
 assertContains("README.md", "buf generate");
 assertContains("README.md", "harden-generated-example-proto.mjs");
 assertContains("README.md", "actions/workflows/checks.yml/badge.svg");
-assertContains("README.md", "RELEASE_READINESS_CORE_CONTRACT_VERSION = 6");
+assertContains("README.md", "RELEASE_READINESS_CORE_CONTRACT_VERSION = 7");
+assertContains("core.mjs", "scalarFieldClassifications");
+assertContains("core.mjs", "unclassified protobuf scalar field");
+assertContains("templates/check_release_readiness.mjs", "scalarFieldClassifications");
 assertContains("README.md", "outside the declared generated directories");
 assertContains("README.md", "neither sparse nor sequential numbering");
-assertContains("README.md", '{ message: "MessageName", field: "field_name" }');
+assertContains("README.md", 'sensitivity: "sensitive"');
 assertContains("README.md", "templates/check_release_readiness.mjs");
 assertContains(
   "templates/check_release_readiness.mjs",

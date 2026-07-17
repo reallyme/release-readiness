@@ -26,7 +26,8 @@ runner so policy fixes do not remain trapped in stale local copies.
   checks.
 - Generated protobuf hardening checks for redacted Debug output, strict
   ProtoJSON, zeroizing temporary byte owners, recursive unknown-field wiping,
-  and final-owner zeroization.
+  final-owner zeroization, and closed-world sensitivity classification for
+  every `bytes` and `string` schema field.
 - Command matrices for repository-specific release suites.
 
 The current vendored-core contract marker is:
@@ -34,7 +35,7 @@ The current vendored-core contract marker is:
 ```js
 assertContains(
   "scripts/release-readiness/core.mjs",
-  "RELEASE_READINESS_CORE_CONTRACT_VERSION = 6",
+  "RELEASE_READINESS_CORE_CONTRACT_VERSION = 7",
 );
 ```
 
@@ -88,9 +89,14 @@ values. `assertProtoContract` requires neither sparse nor sequential numbering;
 it rejects invalid field-number ranges, duplicate identifiers, and reuse of
 reserved names or numbers.
 
-When a shared field name is sensitive only in one generated message, declare it
-as `{ message: "MessageName", field: "field_name" }` so hardening assertions are
-scoped to that message.
+Every protobuf `bytes` and `string` field must appear exactly once in
+`scalarFieldClassifications`. Mark it `sensitivity: "sensitive"` or
+`sensitivity: "public"` explicitly and include its schema kind and owning
+message. The checker rejects unclassified schema additions, duplicate entries,
+kind mismatches, and stale classifications. Sensitive entries additionally
+require message-scoped Debug redaction, generated-path and final-owner wiping,
+and a zeroizing ProtoJSON staging owner. Nested messages fail closed until the
+classifier is explicitly extended to represent their ownership path.
 
 The executable adapter boundary is intentionally narrow: the proto crate owns
 messages only, exposes no protobuf service, accepts binary protobuf and

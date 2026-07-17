@@ -824,6 +824,14 @@ test("generated hardening supports message-scoped sensitive field names", () => 
   const root = createFixture();
   const context = createContext(root);
   writeFileSync(
+    join(root, "schema.proto"),
+    `syntax = "proto3";
+message SensitiveBytes {
+  bytes value = 1;
+}
+`,
+  );
+  writeFileSync(
     join(root, "harden.mjs"),
     'const option = "--check-idempotent";\ndeserialize_zeroizing_bytes\n',
   );
@@ -860,9 +868,17 @@ impl ::core::fmt::Debug for PublicValue {
 
   context.assertGeneratedProtoHardeningPolicy({
     hardeningScript: "harden.mjs",
+    protoSchema: "schema.proto",
     generatedRust: "generated.rs",
     requiredScriptNeedles: ["deserialize_zeroizing_bytes"],
-    secretByteFields: [{ message: "SensitiveBytes", field: "value" }],
+    scalarFieldClassifications: [
+      {
+        message: "SensitiveBytes",
+        field: "value",
+        kind: "bytes",
+        sensitivity: "sensitive",
+      },
+    ],
     requiredGeneratedNeedles: ["pub struct SensitiveBytes"],
     forbiddenGeneratedNeedles: ["::buffa::alloc::format!("],
     requireStrictJson: false,
@@ -874,9 +890,15 @@ impl ::core::fmt::Debug for PublicValue {
     root,
     `context.assertGeneratedProtoHardeningPolicy({
   hardeningScript: "harden.mjs",
+  protoSchema: "schema.proto",
   generatedRust: "generated.rs",
   requiredScriptNeedles: ["deserialize_zeroizing_bytes"],
-  secretByteFields: [{ message: "SensitiveBytes", field: "value" }],
+  scalarFieldClassifications: [{
+    message: "SensitiveBytes",
+    field: "value",
+    kind: "bytes",
+    sensitivity: "sensitive",
+  }],
   requiredGeneratedNeedles: ["pub struct SensitiveBytes"],
   forbiddenGeneratedNeedles: ["::buffa::alloc::format!("],
   requireStrictJson: false,
@@ -889,6 +911,14 @@ impl ::core::fmt::Debug for PublicValue {
 
 test("generated hardening requires recursive unknown-field zeroization", () => {
   const root = createFixture();
+  writeFileSync(
+    join(root, "schema.proto"),
+    `syntax = "proto3";
+message SensitiveBytes {
+  bytes value = 1;
+}
+`,
+  );
   writeFileSync(
     join(root, "harden.mjs"),
     `deserialize_zeroizing_bytes
@@ -930,9 +960,15 @@ struct Wire {
     root,
     `context.assertGeneratedProtoHardeningPolicy({
   hardeningScript: "harden.mjs",
+  protoSchema: "schema.proto",
   generatedRust: "generated.rs",
   requiredScriptNeedles: ["deserialize_zeroizing_bytes"],
-  secretByteFields: [{ message: "SensitiveBytes", field: "value" }],
+  scalarFieldClassifications: [{
+    message: "SensitiveBytes",
+    field: "value",
+    kind: "bytes",
+    sensitivity: "sensitive",
+  }],
   requiredGeneratedNeedles: ["pub struct SensitiveBytes"],
   forbiddenGeneratedNeedles: ["::buffa::alloc::format!("],
   requireStrictJson: false,
@@ -944,4 +980,130 @@ struct Wire {
     result.stderr,
     /harden\.mjs does not contain ::buffa::UnknownFieldData::Group\(fields\)/u,
   );
+});
+
+test("generated hardening rejects every unclassified bytes or string field", () => {
+  const root = createFixture();
+  writeFileSync(join(root, "harden.mjs"), 'const option = "--check-idempotent";\nredact\n');
+  writeFileSync(
+    join(root, "generated.rs"),
+    `pub struct SensitiveBytes {
+    pub value: ::buffa::alloc::vec::Vec<u8>,
+}
+impl ::core::fmt::Debug for SensitiveBytes {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("SensitiveBytes").field("value", &"<redacted>").finish()
+    }
+}
+impl ::core::ops::Drop for SensitiveBytes {
+    fn drop(&mut self) {
+        ::zeroize::Zeroize::zeroize(&mut self.value);
+    }
+}
+struct Wire {
+    value: ::zeroize::Zeroizing<::buffa::alloc::vec::Vec<u8>>,
+}
+`,
+  );
+
+  for (const kind of ["bytes", "string"]) {
+    writeFileSync(
+      join(root, "schema.proto"),
+      `syntax = "proto3";
+message SensitiveBytes { bytes value = 1; optional ${kind} newly_added_secret = 2 [deprecated = true]; }
+`,
+    );
+    const result = runFixtureScript(
+      root,
+      `context.assertGeneratedProtoHardeningPolicy({
+  hardeningScript: "harden.mjs",
+  protoSchema: "schema.proto",
+  generatedRust: "generated.rs",
+  requiredScriptNeedles: ["redact"],
+  scalarFieldClassifications: [{
+    message: "SensitiveBytes",
+    field: "value",
+    kind: "bytes",
+    sensitivity: "sensitive",
+  }],
+  requiredGeneratedNeedles: ["pub struct SensitiveBytes"],
+  forbiddenGeneratedNeedles: ["::buffa::alloc::format!("],
+  requireStrictJson: false,
+  requireUnknownFieldZeroization: false,
+});`,
+    );
+
+    assert.equal(result.status, 1);
+    assert.match(
+      result.stderr,
+      new RegExp(
+        `schema\\.proto has unclassified protobuf scalar field SensitiveBytes\\.newly_added_secret:${kind}`,
+        "u",
+      ),
+    );
+  }
+});
+
+test("generated hardening handles indented messages and single-quoted options", () => {
+  const root = createFixture();
+  const context = createContext(root);
+  writeFileSync(join(root, "harden.mjs"), 'const option = "--check-idempotent";\nredact\n');
+  writeFileSync(
+    join(root, "schema.proto"),
+    `syntax = "proto3";
+  message SensitiveBytes {
+    bytes value = 1 [json_name = 'value]alias'];
+    string display_label = 2 [json_name = 'display_label'];
+  }
+`,
+  );
+  writeFileSync(
+    join(root, "generated.rs"),
+    `pub struct SensitiveBytes {
+    pub value: ::buffa::alloc::vec::Vec<u8>,
+    pub display_label: ::buffa::alloc::string::String,
+}
+impl ::core::fmt::Debug for SensitiveBytes {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("SensitiveBytes")
+            .field("value", &"<redacted>")
+            .field("display_label", &self.display_label)
+            .finish()
+    }
+}
+impl ::core::ops::Drop for SensitiveBytes {
+    fn drop(&mut self) {
+        ::zeroize::Zeroize::zeroize(&mut self.value);
+    }
+}
+struct Wire {
+    value: ::zeroize::Zeroizing<::buffa::alloc::vec::Vec<u8>>,
+}
+`,
+  );
+
+  context.assertGeneratedProtoHardeningPolicy({
+    hardeningScript: "harden.mjs",
+    protoSchema: "schema.proto",
+    generatedRust: "generated.rs",
+    requiredScriptNeedles: ["redact"],
+    scalarFieldClassifications: [
+      {
+        message: "SensitiveBytes",
+        field: "value",
+        kind: "bytes",
+        sensitivity: "sensitive",
+      },
+      {
+        message: "SensitiveBytes",
+        field: "display_label",
+        kind: "string",
+        sensitivity: "public",
+      },
+    ],
+    requiredGeneratedNeedles: ["pub struct SensitiveBytes"],
+    forbiddenGeneratedNeedles: ["::buffa::alloc::format!("],
+    requireStrictJson: false,
+    requireUnknownFieldZeroization: false,
+  });
 });

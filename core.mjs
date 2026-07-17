@@ -11,9 +11,67 @@ import { spawnSync } from "node:child_process";
 // This module is intentionally written as a standalone, vendorable release
 // readiness core. Sister repositories should copy it byte-for-byte or consume a
 // pinned upstream revision so release-critical checks do not drift silently.
-export const RELEASE_READINESS_CORE_CONTRACT_VERSION = 6;
+export const RELEASE_READINESS_CORE_CONTRACT_VERSION = 7;
 
 const DEFAULT_FAILURE_PREFIX = "release readiness check failed";
+
+const scrubProtoCommentsAndStrings = (source) => {
+  let output = "";
+  let state = "normal";
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    const next = source[index + 1];
+    if (state === "normal") {
+      if (character === "/" && next === "/") {
+        output += "  ";
+        index += 1;
+        state = "line-comment";
+      } else if (character === "/" && next === "*") {
+        output += "  ";
+        index += 1;
+        state = "block-comment";
+      } else if (character === '"' || character === "'") {
+        output += " ";
+        state = character === '"' ? "double-quoted-string" : "single-quoted-string";
+      } else {
+        output += character;
+      }
+      continue;
+    }
+    if (state === "line-comment") {
+      if (character === "\n") {
+        output += "\n";
+        state = "normal";
+      } else {
+        output += " ";
+      }
+      continue;
+    }
+    if (state === "block-comment") {
+      if (character === "*" && next === "/") {
+        output += "  ";
+        index += 1;
+        state = "normal";
+      } else {
+        output += character === "\n" ? "\n" : " ";
+      }
+      continue;
+    }
+    if (character === "\\" && next !== undefined) {
+      output += next === "\n" ? " \n" : "  ";
+      index += 1;
+    } else if (
+      (state === "double-quoted-string" && character === '"') ||
+      (state === "single-quoted-string" && character === "'")
+    ) {
+      output += " ";
+      state = "normal";
+    } else {
+      output += character === "\n" ? "\n" : " ";
+    }
+  }
+  return output;
+};
 
 export function createReleaseReadinessContext(options) {
   const {
@@ -894,6 +952,7 @@ export function createReleaseReadinessContext(options) {
   const assertGeneratedProtoHardeningPolicy = (policy) => {
     const {
       hardeningScript,
+      protoSchema,
       generatedRust,
       generatedView,
       protoCargo,
@@ -906,7 +965,7 @@ export function createReleaseReadinessContext(options) {
       forbiddenGeneratedNeedles = [],
       requiredViewNeedles = [],
       requiredCargoNeedles = [],
-      secretByteFields = [],
+      scalarFieldClassifications = [],
       additionalGeneratedPolicies = [],
       requireIdempotence = true,
       requireStrictJson = true,
@@ -918,6 +977,9 @@ export function createReleaseReadinessContext(options) {
     }
     if (typeof generatedRust !== "string" || generatedRust.length === 0) {
       fail("generated proto hardening policy requires a generatedRust path");
+    }
+    if (typeof protoSchema !== "string" || protoSchema.length === 0) {
+      fail("generated proto hardening policy requires a protoSchema path");
     }
     for (const [policyName, needles] of [
       ["required script", requiredScriptNeedles],
@@ -946,16 +1008,13 @@ export function createReleaseReadinessContext(options) {
     if (forbiddenGeneratedNeedles.length === 0) {
       fail("generated proto hardening policy requires forbidden generated-code invariants");
     }
-    if (!Array.isArray(secretByteFields)) {
-      fail("generated proto secret byte fields must be an array");
+    if (!Array.isArray(scalarFieldClassifications)) {
+      fail("generated proto scalar field classifications must be an array");
     }
-    if (secretByteFields.length === 0) {
-      fail("generated proto hardening policy requires declared secret byte fields");
+    if (scalarFieldClassifications.length === 0) {
+      fail("generated proto hardening policy requires scalar field classifications");
     }
-    const normalizedSecretByteFields = secretByteFields.map((entry) => {
-      if (typeof entry === "string" && /^[a-z][a-z0-9_]*$/u.test(entry)) {
-        return { field: entry, message: null };
-      }
+    const normalizedScalarFieldClassifications = scalarFieldClassifications.map((entry) => {
       if (
         entry !== null &&
         typeof entry === "object" &&
@@ -964,14 +1023,85 @@ export function createReleaseReadinessContext(options) {
         /^[A-Z][A-Za-z0-9]*$/u.test(entry.message) &&
         typeof entry.field === "string" &&
         /^[a-z][a-z0-9_]*$/u.test(entry.field) &&
-        Object.keys(entry).every((key) => key === "message" || key === "field")
+        (entry.kind === "bytes" || entry.kind === "string") &&
+        (entry.sensitivity === "sensitive" || entry.sensitivity === "public") &&
+        Object.keys(entry).every((key) =>
+          ["message", "field", "kind", "sensitivity"].includes(key),
+        )
       ) {
-        return { field: entry.field, message: entry.message };
+        return {
+          field: entry.field,
+          kind: entry.kind,
+          message: entry.message,
+          sensitivity: entry.sensitivity,
+        };
       }
       fail(
-        "generated proto secret byte fields must be field identifiers or { message, field } objects",
+        "generated proto scalar classifications require { message, field, kind, sensitivity } objects",
       );
     });
+    const classificationKeys = new Set();
+    for (const entry of normalizedScalarFieldClassifications) {
+      const key = `${entry.message}.${entry.field}:${entry.kind}`;
+      if (classificationKeys.has(key)) {
+        fail(`generated proto scalar classification is duplicated for ${key}`);
+      }
+      classificationKeys.add(key);
+    }
+    const protoText = scrubProtoCommentsAndStrings(readText(protoSchema));
+    const scalarSchemaKeys = new Set();
+    const messagePattern = /^\s*message\s+([A-Z][A-Za-z0-9]*)\s*\{/gmu;
+    for (const messageMatch of protoText.matchAll(messagePattern)) {
+      const openIndex = messageMatch.index + messageMatch[0].lastIndexOf("{");
+      let depth = 0;
+      let closeIndex = -1;
+      for (let index = openIndex; index < protoText.length; index += 1) {
+        if (protoText[index] === "{") {
+          depth += 1;
+        } else if (protoText[index] === "}") {
+          depth -= 1;
+          if (depth === 0) {
+            closeIndex = index;
+            break;
+          }
+        }
+      }
+      if (closeIndex === -1) {
+        fail(`${protoSchema} has an unterminated message ${messageMatch[1]}`);
+      }
+      const body = protoText.slice(openIndex + 1, closeIndex);
+      if (/^\s+message\s+[A-Z][A-Za-z0-9]*\s*\{/mu.test(body)) {
+        fail(
+          `${protoSchema} nested messages require an explicit scalar-classifier extension`,
+        );
+      }
+      if (/\bmap\s*<[^>]*(?:bytes|string)[^>]*>/u.test(body)) {
+        fail(
+          `${protoSchema} maps with bytes/string members require an explicit scalar-classifier extension`,
+        );
+      }
+      for (const fieldMatch of body.matchAll(
+        /(?:^|[;{}])\s*(?:(?:optional|required|repeated)\s+)?(bytes|string)\s+([a-z][a-z0-9_]*)\s*=\s*\d+(?:\s*\[[^\]]*\])?\s*(?=;)/gmu,
+      )) {
+        scalarSchemaKeys.add(`${messageMatch[1]}.${fieldMatch[2]}:${fieldMatch[1]}`);
+      }
+    }
+    for (const key of scalarSchemaKeys) {
+      if (!classificationKeys.has(key)) {
+        fail(`${protoSchema} has unclassified protobuf scalar field ${key}`);
+      }
+    }
+    for (const key of classificationKeys) {
+      if (!scalarSchemaKeys.has(key)) {
+        fail(`generated proto scalar classification is stale for ${key}`);
+      }
+    }
+    const sensitiveScalarFields = normalizedScalarFieldClassifications.filter(
+      (entry) => entry.sensitivity === "sensitive",
+    );
+    if (sensitiveScalarFields.length === 0) {
+      fail("generated proto hardening policy requires at least one sensitive scalar field");
+    }
     if (!Array.isArray(additionalGeneratedPolicies)) {
       fail("additional generated hardening policies must be an array");
     }
@@ -1035,21 +1165,21 @@ export function createReleaseReadinessContext(options) {
           : start + startNeedle.length + nextMessage.index;
       return generatedRustText.slice(start, end);
     };
-    for (const { field, message } of normalizedSecretByteFields) {
-      const scope = message === null ? generatedRustText : messageRegion(message);
+    for (const { field, kind, message } of sensitiveScalarFields) {
+      const scope = messageRegion(message);
       for (const needle of [
         `.field("${field}", &"<redacted>")`,
         `::zeroize::Zeroize::zeroize(&mut self.${field});`,
-        `${field}: ::zeroize::Zeroizing<::buffa::alloc::vec::Vec<u8>>`,
+        kind === "bytes"
+          ? `${field}: ::zeroize::Zeroizing<::buffa::alloc::vec::Vec<u8>>`
+          : `${field}: ::zeroize::Zeroizing<::buffa::alloc::string::String>`,
       ]) {
         if (!scope.includes(needle)) {
-          const owner = message === null ? generatedRust : `${generatedRust} message ${message}`;
-          fail(`${owner} does not contain ${needle}`);
+          fail(`${generatedRust} message ${message} does not contain ${needle}`);
         }
       }
       if (scope.includes(`.field("${field}", &self.${field})`)) {
-        const owner = message === null ? generatedRust : `${generatedRust} message ${message}`;
-        fail(`${owner} must not expose ${field} in generated Debug output`);
+        fail(`${generatedRust} message ${message} must not expose ${field} in generated Debug output`);
       }
       // Buffa's generated message storage remains Vec<u8>. Sensitive
       // ProtoJSON decoding must stage bytes in a zeroizing temporary, while
@@ -1202,7 +1332,7 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     assertContains(corePath, "assertWorkflowActionsPinned");
     assertContains(corePath, "assertWorkflowPolicy");
     assertContains(corePath, "runCommands");
-    assertContains(corePath, "secretByteFields");
+    assertContains(corePath, "scalarFieldClassifications");
     assertContains(corePath, "assertProtoContract");
     assertContains(corePath, "assertReallyMeProtoBoundaryContract");
     assertContains(corePath, "assertWorkflowRunStep");
