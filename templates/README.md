@@ -27,6 +27,8 @@ The template enables the following mandatory baseline through
 
 - the checker and vendored core are Git-tracked and use the expected contract;
 - GitHub Actions are pinned to immutable commits and Node jobs use Node 24;
+- cargo-fuzz installs are exact-version pinned, locked, and present in both
+  pull-request and scheduled fuzz lanes through named workflow steps;
 - Cargo workspace lints, publish include allowlists, and publishable path
   dependency versions are validated;
 - tracked hand-written sources carry ReallyMe Apache-2.0 SPDX headers;
@@ -34,6 +36,8 @@ The template enables the following mandatory baseline through
   one binary status/payload result envelope;
 - generated ProtoJSON is a request convenience and returns that same binary
   envelope;
+- every declared SDK adapter exposes both generic protobuf and generated
+  ProtoJSON entrypoints and references the binary result envelope;
 - generated sensitive fields have redacted Debug, zeroizing JSON temporaries,
   final-owner zeroization, recursive unknown-field wiping, and strict unknown
   JSON rejection;

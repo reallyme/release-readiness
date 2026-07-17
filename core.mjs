@@ -11,7 +11,7 @@ import { spawnSync } from "node:child_process";
 // This module is intentionally written as a standalone, vendorable release
 // readiness core. Sister repositories should copy it byte-for-byte or consume a
 // pinned upstream revision so release-critical checks do not drift silently.
-export const RELEASE_READINESS_CORE_CONTRACT_VERSION = 4;
+export const RELEASE_READINESS_CORE_CONTRACT_VERSION = 6;
 
 const DEFAULT_FAILURE_PREFIX = "release readiness check failed";
 
@@ -942,17 +942,32 @@ export function createReleaseReadinessContext(options) {
     if (forbiddenGeneratedNeedles.length === 0) {
       fail("generated proto hardening policy requires forbidden generated-code invariants");
     }
-    if (
-      !Array.isArray(secretByteFields) ||
-      secretByteFields.some(
-        (field) => typeof field !== "string" || !/^[a-z][a-z0-9_]*$/u.test(field),
-      )
-    ) {
-      fail("generated proto secret byte fields must be protobuf field identifiers");
+    if (!Array.isArray(secretByteFields)) {
+      fail("generated proto secret byte fields must be an array");
     }
     if (secretByteFields.length === 0) {
       fail("generated proto hardening policy requires declared secret byte fields");
     }
+    const normalizedSecretByteFields = secretByteFields.map((entry) => {
+      if (typeof entry === "string" && /^[a-z][a-z0-9_]*$/u.test(entry)) {
+        return { field: entry, message: null };
+      }
+      if (
+        entry !== null &&
+        typeof entry === "object" &&
+        !Array.isArray(entry) &&
+        typeof entry.message === "string" &&
+        /^[A-Z][A-Za-z0-9]*$/u.test(entry.message) &&
+        typeof entry.field === "string" &&
+        /^[a-z][a-z0-9_]*$/u.test(entry.field) &&
+        Object.keys(entry).every((key) => key === "message" || key === "field")
+      ) {
+        return { field: entry.field, message: entry.message };
+      }
+      fail(
+        "generated proto secret byte fields must be field identifiers or { message, field } objects",
+      );
+    });
     if (!Array.isArray(additionalGeneratedPolicies)) {
       fail("additional generated hardening policies must be an array");
     }
@@ -998,23 +1013,65 @@ export function createReleaseReadinessContext(options) {
     for (const needle of forbiddenScriptNeedles) {
       assertNotContains(hardeningScript, needle);
     }
-    for (const field of secretByteFields) {
-      assertContains(generatedRust, `.field("${field}", &"<redacted>")`);
-      assertNotContains(generatedRust, `.field("${field}", &self.${field})`);
-      assertContains(generatedRust, `::zeroize::Zeroize::zeroize(&mut self.${field});`);
+    const generatedRustText = readText(generatedRust);
+    const messageRegion = (message) => {
+      const startNeedle = `pub struct ${message} {`;
+      const start = generatedRustText.indexOf(startNeedle);
+      if (start === -1) {
+        fail(`${generatedRust} does not define generated message ${message}`);
+      }
+      const remainder = generatedRustText.slice(start + startNeedle.length);
+      const nextMessage = /^pub struct [A-Z][A-Za-z0-9]* \{/gmu.exec(remainder);
+      const end =
+        nextMessage === null
+          ? generatedRustText.length
+          : start + startNeedle.length + nextMessage.index;
+      return generatedRustText.slice(start, end);
+    };
+    for (const { field, message } of normalizedSecretByteFields) {
+      const scope = message === null ? generatedRustText : messageRegion(message);
+      for (const needle of [
+        `.field("${field}", &"<redacted>")`,
+        `::zeroize::Zeroize::zeroize(&mut self.${field});`,
+        `${field}: ::zeroize::Zeroizing<::buffa::alloc::vec::Vec<u8>>`,
+      ]) {
+        if (!scope.includes(needle)) {
+          const owner = message === null ? generatedRust : `${generatedRust} message ${message}`;
+          fail(`${owner} does not contain ${needle}`);
+        }
+      }
+      if (scope.includes(`.field("${field}", &self.${field})`)) {
+        const owner = message === null ? generatedRust : `${generatedRust} message ${message}`;
+        fail(`${owner} must not expose ${field} in generated Debug output`);
+      }
       // Buffa's generated message storage remains Vec<u8>. Sensitive
       // ProtoJSON decoding must stage bytes in a zeroizing temporary, while
       // generated clear and Drop paths wipe the final generated field owner.
-      assertContains(
-        generatedRust,
-        `${field}: ::zeroize::Zeroizing<::buffa::alloc::vec::Vec<u8>>`,
-      );
     }
     if (requireStrictJson) {
       assertContains(generatedRust, "#[serde(default, deny_unknown_fields)]");
     }
     if (requireUnknownFieldZeroization) {
+      for (const needle of [
+        "::buffa::UnknownFieldData::LengthDelimited(bytes)",
+        "::buffa::UnknownFieldData::Group(fields)",
+        "__reallyme_zeroize_unknown_fields(fields);",
+      ]) {
+        assertContains(hardeningScript, needle);
+      }
       assertContains(generatedRust, "fn __reallyme_zeroize_unknown_fields(");
+      assertContains(
+        generatedRust,
+        "::buffa::UnknownFieldData::LengthDelimited(bytes)",
+      );
+      assertContains(
+        generatedRust,
+        "::buffa::UnknownFieldData::Group(fields)",
+      );
+      assertContains(
+        generatedRust,
+        "__reallyme_zeroize_unknown_fields(fields);",
+      );
       assertContains(
         generatedRust,
         "__reallyme_zeroize_unknown_fields(&mut self.__buffa_unknown_fields);",
@@ -1145,6 +1202,8 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     assertContains(corePath, "assertWorkflowUsesStep");
   };
 
+  const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+
   const assertNodeWorkflowJobsPinNode = (workflowOptions = {}) => {
     const workflowDirectoryPath = workflowOptions.workflowDirectory ?? ".github/workflows";
     const workflowDirectory = assertRepositoryDirectory(
@@ -1152,6 +1211,27 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
       "workflow directory",
     );
     const nodeVersion = workflowOptions.nodeVersion ?? "24";
+    const nodeToolCommands = workflowOptions.nodeToolCommands ?? [
+      "node",
+      "npm",
+      "npx",
+      "pnpm",
+      "yarn",
+      "corepack",
+      "bun",
+    ];
+    if (
+      !Array.isArray(nodeToolCommands) ||
+      nodeToolCommands.some(
+        (command) => typeof command !== "string" || !/^[A-Za-z0-9_-]+$/u.test(command),
+      )
+    ) {
+      fail("Node workflow tool policy must be an array of command names");
+    }
+    const nodeToolPattern = new RegExp(
+      `\\b(?:${nodeToolCommands.map(escapeRegExp).join("|")})\\b`,
+      "u",
+    );
     for (const workflowFile of readdirSync(workflowDirectory).filter((name) => /\.ya?ml$/u.test(name))) {
       const workflowPath = `${workflowDirectoryPath}/${workflowFile}`;
       const workflow = readText(workflowPath);
@@ -1168,7 +1248,7 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
           .split("\n")
           .filter((line) => !line.trimStart().startsWith("#"))
           .join("\n");
-        if (!/\b(?:node|npm|npx|pnpm)\b/.test(activeJob)) {
+        if (!nodeToolPattern.test(activeJob)) {
           continue;
         }
         if (!/^\s*uses:\s*actions\/setup-node@[^\s#]+(?:\s+#.*)?$/m.test(activeJob)) {
@@ -1230,10 +1310,9 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     return match?.[0].length ?? 0;
   };
 
-  const extractWorkflowSteps = (path) => {
-    const lines = readText(path).replace(/\r\n/gu, "\n").split("\n");
+  const extractWorkflowStepsFromLines = (path, lines, start, end, jobName = null) => {
     const steps = [];
-    for (let index = 0; index < lines.length; index += 1) {
+    for (let index = start; index < end; index += 1) {
       const nameMatch = /^(\s*)-\s+name:\s*(.+?)\s*$/u.exec(lines[index]);
       if (nameMatch === null) {
         continue;
@@ -1292,9 +1371,41 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
         }
       }
 
-      steps.push({ name, run, uses });
+      steps.push({ job: jobName, name, run, uses });
     }
     return steps;
+  };
+
+  const extractWorkflowJobs = (path) => {
+    const lines = readText(path).replace(/\r\n/gu, "\n").split("\n");
+    const jobsLine = lines.findIndex((line) => /^jobs:\s*$/u.test(line));
+    if (jobsLine === -1) {
+      return [];
+    }
+    const headers = [];
+    for (let index = jobsLine + 1; index < lines.length; index += 1) {
+      const match = /^  ([A-Za-z0-9_-]+):\s*$/u.exec(lines[index]);
+      if (match !== null) {
+        headers.push({ name: match[1], index });
+      }
+    }
+    return headers.map((header, index) => ({
+      name: header.name,
+      start: header.index,
+      end: headers[index + 1]?.index ?? lines.length,
+      lines,
+    }));
+  };
+
+  const extractWorkflowSteps = (path) => {
+    const jobs = extractWorkflowJobs(path);
+    if (jobs.length === 0) {
+      const lines = readText(path).replace(/\r\n/gu, "\n").split("\n");
+      return extractWorkflowStepsFromLines(path, lines, 0, lines.length);
+    }
+    return jobs.flatMap((job) =>
+      extractWorkflowStepsFromLines(path, job.lines, job.start, job.end, job.name),
+    );
   };
 
   const findWorkflowStep = (path, stepName) => {
@@ -1439,6 +1550,97 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     }
   };
 
+  const assertCargoFuzzWorkflowPolicy = (policy) => {
+    const {
+      workflow = ".github/workflows/fuzz.yml",
+      version,
+      minimumInstallations = 2,
+      requiredInstallSteps = [],
+    } = policy ?? {};
+    if (typeof workflow !== "string" || workflow.length === 0) {
+      fail("cargo-fuzz workflow policy requires a workflow path");
+    }
+    if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/u.test(version)) {
+      fail("cargo-fuzz workflow policy requires an exact semantic version");
+    }
+    if (!Number.isSafeInteger(minimumInstallations) || minimumInstallations < 1) {
+      fail("cargo-fuzz workflow policy requires a positive installation count");
+    }
+    if (
+      !Array.isArray(requiredInstallSteps) ||
+      requiredInstallSteps.some(
+        (step) =>
+          step === null ||
+          typeof step !== "object" ||
+          Array.isArray(step) ||
+          typeof step.name !== "string" ||
+          step.name.length === 0 ||
+          (step.job !== undefined &&
+            (typeof step.job !== "string" || step.job.length === 0)),
+      )
+    ) {
+      fail("cargo-fuzz required install steps must be named workflow steps");
+    }
+
+    const text = readText(workflow).replace(/\r\n/gu, "\n");
+    const installSteps = extractWorkflowSteps(workflow).filter(
+      (step) =>
+        step.run !== null &&
+        normalizeWorkflowRunCommand(step.run)
+          .split("\n")
+          .some((line) => /^cargo\s+install\s+cargo-fuzz(?:\s|$)/u.test(line.trim())),
+    );
+    if (installSteps.length < minimumInstallations) {
+      fail(
+        `${workflow} must install cargo-fuzz at least ${minimumInstallations} times`,
+      );
+    }
+    const environmentVersion = new RegExp(
+      `^\\s*CARGO_FUZZ_VERSION:\\s*["']?${version.replaceAll(".", "\\.")}["']?\\s*$`,
+      "mu",
+    );
+    for (const expected of requiredInstallSteps) {
+      const matches = installSteps.filter(
+        (step) =>
+          step.name === expected.name &&
+          (expected.job === undefined || step.job === expected.job),
+      );
+      if (matches.length === 0) {
+        const location =
+          expected.job === undefined
+            ? expected.name
+            : `${expected.job}/${expected.name}`;
+        fail(`${workflow} is missing cargo-fuzz install step ${location}`);
+      }
+      if (matches.length > 1) {
+        const location =
+          expected.job === undefined
+            ? expected.name
+            : `${expected.job}/${expected.name}`;
+        fail(`${workflow} defines cargo-fuzz install step ${location} more than once`);
+      }
+    }
+    for (const step of installSteps) {
+      const command = normalizeWorkflowRunCommand(step.run);
+      if (!/(?:^|\s)--locked(?:\s|$)/u.test(command)) {
+        fail(`${workflow} cargo-fuzz installation must use --locked`);
+      }
+      const usesLiteralVersion = command.includes(`--version ${version}`);
+      const usesEnvironmentVersion =
+        command.includes('--version "$CARGO_FUZZ_VERSION"') ||
+        command.includes("--version '$CARGO_FUZZ_VERSION'") ||
+        command.includes("--version $CARGO_FUZZ_VERSION");
+      if (
+        !usesLiteralVersion &&
+        !(usesEnvironmentVersion && environmentVersion.test(text))
+      ) {
+        fail(
+          `${workflow} cargo-fuzz installation must pin version ${version}`,
+        );
+      }
+    }
+  };
+
   const assertReallyMeRustProtoRepositoryPolicy = (policy) => {
     if (policy === null || typeof policy !== "object" || Array.isArray(policy)) {
       fail("ReallyMe Rust protobuf repository policy must be an object");
@@ -1448,6 +1650,7 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
       vendoredCore = {},
       workflowActions = {},
       nodeWorkflows = {},
+      cargoFuzz,
       cargoWorkspace = {},
       spdx = {},
       protobufBoundary,
@@ -1463,6 +1666,7 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
       ["vendoredCore", vendoredCore],
       ["workflowActions", workflowActions],
       ["nodeWorkflows", nodeWorkflows],
+      ["cargoFuzz", cargoFuzz],
       ["cargoWorkspace", cargoWorkspace],
       ["spdx", spdx],
       ["protobufBoundary", protobufBoundary],
@@ -1511,6 +1715,7 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     assertReallyMeVendoredCorePolicy(vendoredCore);
     assertWorkflowActionsPinned(workflowActions);
     assertNodeWorkflowJobsPinNode(nodeWorkflows);
+    assertCargoFuzzWorkflowPolicy(cargoFuzz);
     assertCargoWorkspacePolicy(cargoWorkspace);
     assertSpdxHeaders(spdx);
     assertReallyMeProtoBoundaryContract(protobufBoundary);
@@ -1714,6 +1919,7 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
       processProtoNeedle = "pub fn process_proto(",
       processProtoJsonNeedle = "pub fn process_proto_json(",
       binaryEnvelopeNeedle = "encode_proto_result_envelope",
+      sdkAdapters = [],
     } = policy ?? {};
     for (const [name, value] of Object.entries({
       protoPath,
@@ -1725,6 +1931,17 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
       if (typeof value !== "string" || value.length === 0) {
         fail(`protobuf boundary policy ${name} must be a non-empty string`);
       }
+    }
+    if (
+      !Array.isArray(sdkAdapters) ||
+      sdkAdapters.some(
+        (adapter) =>
+          adapter === null ||
+          typeof adapter !== "object" ||
+          Array.isArray(adapter),
+      )
+    ) {
+      fail("protobuf boundary policy sdkAdapters must be an array of objects");
     }
     for (const [name, value] of Object.entries({
       operationRequest,
@@ -1797,6 +2014,53 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     assertNotContains(wirePath, "pub fn process_json(");
     assertNotContains(wirePath, "pub fn process_proto_with_operation");
     assertNotContains(wirePath, "pub fn process_proto_operation");
+
+    for (const [index, adapter] of sdkAdapters.entries()) {
+      const {
+        path,
+        processProtoNeedle: adapterProcessProtoNeedle,
+        processProtoJsonNeedle: adapterProcessProtoJsonNeedle,
+        binaryEnvelopeNeedle: adapterBinaryEnvelopeNeedle = resultEnvelope,
+        requiredNeedles = [],
+        forbiddenNeedles = [],
+      } = adapter;
+      for (const [name, value] of Object.entries({
+        path,
+        processProtoNeedle: adapterProcessProtoNeedle,
+        processProtoJsonNeedle: adapterProcessProtoJsonNeedle,
+        binaryEnvelopeNeedle: adapterBinaryEnvelopeNeedle,
+      })) {
+        if (typeof value !== "string" || value.length === 0) {
+          fail(
+            `protobuf boundary sdkAdapters[${index}].${name} must be a non-empty string`,
+          );
+        }
+      }
+      for (const [name, needles] of Object.entries({
+        requiredNeedles,
+        forbiddenNeedles,
+      })) {
+        if (
+          !Array.isArray(needles) ||
+          needles.some(
+            (needle) => typeof needle !== "string" || needle.length === 0,
+          )
+        ) {
+          fail(
+            `protobuf boundary sdkAdapters[${index}].${name} must be an array of non-empty strings`,
+          );
+        }
+      }
+      assertContains(path, adapterProcessProtoNeedle);
+      assertContains(path, adapterProcessProtoJsonNeedle);
+      assertContains(path, adapterBinaryEnvelopeNeedle);
+      for (const needle of requiredNeedles) {
+        assertContains(path, needle);
+      }
+      for (const needle of forbiddenNeedles) {
+        assertNotContains(path, needle);
+      }
+    }
   };
 
   return {
@@ -1831,6 +2095,7 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     assertReallyMeVendoredCorePolicy,
     assertNodeWorkflowJobsPinNode,
     assertWorkflowActionsPinned,
+    assertCargoFuzzWorkflowPolicy,
     assertReallyMeRustProtoRepositoryPolicy,
     normalizeWorkflowRunCommand,
     extractWorkflowSteps,

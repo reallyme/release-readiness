@@ -31,6 +31,15 @@ const repositoryPolicy = {
   nodeWorkflows: {
     nodeVersion: "24",
   },
+  cargoFuzz: {
+    workflow: ".github/workflows/fuzz.yml",
+    version: "0.13.2",
+    minimumInstallations: 2,
+    requiredInstallSteps: [
+      { job: "immediate", name: "Install cargo-fuzz" },
+      { job: "scheduled", name: "Install cargo-fuzz" },
+    ],
+  },
   cargoWorkspace: {
     requireWorkspaceLints: true,
     requirePublishInclude: true,
@@ -53,6 +62,10 @@ const repositoryPolicy = {
     protoCargo: "REPLACE_PROTO_CARGO",
     wirePath: "REPLACE_PROCESS_ADAPTER_PATH",
     codecPath: "REPLACE_PROTO_CODEC_PATH",
+    // Declare every public SDK transport adapter here. Each adapter must expose
+    // both generic entrypoints and reference the binary result envelope. Use
+    // requiredNeedles/forbiddenNeedles for lane-specific hardening invariants.
+    sdkAdapters: [],
   },
   protobufRelease: {
     workflow: ".github/workflows/protobuf-ci.yml",

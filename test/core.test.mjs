@@ -217,6 +217,103 @@ jobs:
   assert.match(result.stderr, /not pinned to a full commit SHA/u);
 });
 
+test("cargo-fuzz workflow policy requires locked exact-version installs", () => {
+  const root = createFixture();
+  const context = createContext(root);
+  writeFileSync(
+    join(root, ".github", "workflows", "fuzz.yml"),
+    `name: Fuzz
+env:
+  CARGO_FUZZ_VERSION: "0.13.2"
+jobs:
+  immediate:
+    steps:
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+  scheduled:
+    steps:
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version "$CARGO_FUZZ_VERSION" --locked
+`,
+  );
+  context.assertCargoFuzzWorkflowPolicy({
+    version: "0.13.2",
+    requiredInstallSteps: [
+      { job: "immediate", name: "Install cargo-fuzz" },
+      { job: "scheduled", name: "Install cargo-fuzz" },
+    ],
+  });
+
+  writeFileSync(
+    join(root, ".github", "workflows", "fuzz.yml"),
+    `name: Fuzz
+jobs:
+  immediate:
+    steps:
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.13.2
+      - name: Install cargo-fuzz again
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+`,
+  );
+  const result = runFixtureScript(
+    root,
+    'context.assertCargoFuzzWorkflowPolicy({ version: "0.13.2" });',
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /must use --locked/u);
+});
+
+test("cargo-fuzz workflow policy ignores comments and requires configured lanes", () => {
+  const root = createFixture();
+  writeFileSync(
+    join(root, ".github", "workflows", "fuzz.yml"),
+    `name: Fuzz
+jobs:
+  immediate:
+    steps:
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+      - name: Explain scheduled fuzz
+        run: echo "scheduled lane installs cargo install cargo-fuzz --version 0.13.2 --locked elsewhere"
+# cargo install cargo-fuzz --version 0.13.2 --locked
+`,
+  );
+  const result = runFixtureScript(
+    root,
+    `context.assertCargoFuzzWorkflowPolicy({
+  version: "0.13.2",
+  requiredInstallSteps: [
+    { job: "immediate", name: "Install cargo-fuzz" },
+    { job: "scheduled", name: "Install cargo-fuzz" },
+  ],
+});`,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /must install cargo-fuzz at least 2 times/u);
+});
+
+test("Node workflow policy detects corepack-based Node tooling", () => {
+  const root = createFixture();
+  writeFileSync(
+    join(root, ".github", "workflows", "corepack.yml"),
+    `name: Corepack
+on: push
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Use pnpm through corepack
+        run: corepack pnpm install --frozen-lockfile
+`,
+  );
+  const result = runFixtureScript(root, "context.assertNodeWorkflowJobsPinNode();");
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /uses Node tooling without actions\/setup-node/u);
+});
+
 test("workflow action policy requires Docker digests and contained local paths", () => {
   const root = createFixture();
   writeFileSync(
@@ -537,6 +634,14 @@ pub fn process_proto_json() {}
 fn encode_proto_result_envelope() {}
 `,
   );
+  writeFileSync(
+    join(root, "swift.swift"),
+    `// CodecProtoResultEnvelope
+// ZEROIZING_OUTPUT
+public func processProto(_ request: [UInt8]) {}
+public func processProtoJson(_ requestJson: [UInt8]) {}
+`,
+  );
 
   context.assertReallyMeProtoBoundaryContract({
     protoPath: "contract.proto",
@@ -546,7 +651,127 @@ fn encode_proto_result_envelope() {}
     protoReadme: "README.md",
     protoCargo: "Cargo.toml",
     wirePath: "wire.rs",
+    sdkAdapters: [
+      {
+        path: "swift.swift",
+        processProtoNeedle: "public func processProto(_ request: [UInt8])",
+        processProtoJsonNeedle:
+          "public func processProtoJson(_ requestJson: [UInt8])",
+        requiredNeedles: ["// ZEROIZING_OUTPUT"],
+      },
+    ],
   });
+
+  writeFileSync(
+    join(root, "swift.swift"),
+    `// CodecProtoResultEnvelope
+public func processProto(_ request: [UInt8]) {}
+public func processProtoJson(_ requestJson: [UInt8]) {}
+`,
+  );
+  const missingRequiredNeedle = runFixtureScript(
+    root,
+    `context.assertReallyMeProtoBoundaryContract({
+  protoPath: "contract.proto",
+  operationRequest: "OperationRequest",
+  resultEnvelope: "ResultEnvelope",
+  resultStatus: "ResultStatus",
+  protoReadme: "README.md",
+  protoCargo: "Cargo.toml",
+  wirePath: "wire.rs",
+  sdkAdapters: [{
+    path: "swift.swift",
+    processProtoNeedle: "public func processProto(_ request: [UInt8])",
+    processProtoJsonNeedle: "public func processProtoJson(_ requestJson: [UInt8])",
+    requiredNeedles: ["// ZEROIZING_OUTPUT"],
+  }],
+});`,
+  );
+  assert.equal(missingRequiredNeedle.status, 1);
+  assert.match(
+    missingRequiredNeedle.stderr,
+    /swift\.swift does not contain \/\/ ZEROIZING_OUTPUT/u,
+  );
+});
+
+test("ReallyMe protobuf boundary contract rejects incomplete SDK adapters", () => {
+  const root = createFixture();
+  writeFileSync(
+    join(root, "contract.proto"),
+    `syntax = "proto3";
+enum ResultStatus {
+  RESULT_STATUS_UNSPECIFIED = 0;
+  RESULT_STATUS_RESULT = 1;
+}
+message ResultEnvelope {
+  ResultStatus status = 1;
+  bytes payload = 2;
+}
+message OperationRequest {
+  oneof operation {
+    SignRequest sign = 1;
+  }
+}
+message SignRequest {
+  bytes payload = 1;
+}
+`,
+  );
+  writeFileSync(
+    join(root, "README.md"),
+    `This crate defines messages only; it intentionally declares no protobuf service.
+JSON is a generated ProtoJSON request convenience. Results remain a binary protobuf result envelope.
+`,
+  );
+  writeFileSync(
+    join(root, "buf.gen.yaml"),
+    `plugins:
+  - local: protoc-gen-buffa
+    opt: [views=true,json=true]
+`,
+  );
+  writeFileSync(
+    join(root, "Cargo.toml"),
+    '[features]\ngenerated = ["buffa/json", "zeroize"]\n',
+  );
+  writeFileSync(
+    join(root, "wire.rs"),
+    `use zeroize::Zeroizing;
+type Output = Zeroizing<Vec<u8>>;
+fn check(_: OperationRequest, _: ResultEnvelope) {
+    let _ = DecodeOptions::new();
+}
+pub fn process_proto() {}
+pub fn process_proto_json() {}
+fn encode_proto_result_envelope() {}
+`,
+  );
+  writeFileSync(
+    join(root, "swift.swift"),
+    `// ResultEnvelope
+public func processProto(_ request: [UInt8]) {}
+`,
+  );
+  const result = runFixtureScript(
+    root,
+    `context.assertReallyMeProtoBoundaryContract({
+  protoPath: "contract.proto",
+  operationRequest: "OperationRequest",
+  resultEnvelope: "ResultEnvelope",
+  resultStatus: "ResultStatus",
+  protoReadme: "README.md",
+  protoCargo: "Cargo.toml",
+  wirePath: "wire.rs",
+  sdkAdapters: [{
+    path: "swift.swift",
+    processProtoNeedle: "public func processProto(",
+    processProtoJsonNeedle: "public func processProtoJson(",
+  }],
+});`,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /swift\.swift does not contain public func processProtoJson\(/u);
 });
 
 test("aggregate Rust protobuf policy rejects duplicate freshness configuration", () => {
@@ -558,6 +783,7 @@ test("aggregate Rust protobuf policy rejects duplicate freshness configuration",
   vendoredCore: {},
   workflowActions: {},
   nodeWorkflows: {},
+  cargoFuzz: {},
   cargoWorkspace: {},
   spdx: {},
   protobufBoundary: {},
@@ -586,6 +812,112 @@ test("local checker template is syntactically valid and fails closed by construc
   assert.match(template, /assertReallyMeRustProtoRepositoryPolicy/u);
   assert.match(template, /assertNoTemplateMarkers\(repositoryPolicy\)/u);
   assert.match(template, /validatePublishablePathDependencies: true/u);
+  assert.match(template, /version: "0\.13\.2"/u);
   assert.match(template, /REPLACE_SECRET_BYTE_FIELD/u);
   assert.doesNotMatch(template, /requireTrackedFiles: false/u);
+});
+
+test("generated hardening supports message-scoped sensitive field names", () => {
+  const root = createFixture();
+  const context = createContext(root);
+  writeFileSync(join(root, "harden.mjs"), "deserialize_zeroizing_bytes\n");
+  writeFileSync(
+    join(root, "generated.rs"),
+    `#[derive(Clone, PartialEq, Default)]
+pub struct SensitiveBytes {
+    pub value: ::buffa::alloc::vec::Vec<u8>,
+}
+impl ::core::fmt::Debug for SensitiveBytes {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("SensitiveBytes").field("value", &"<redacted>").finish()
+    }
+}
+impl ::core::ops::Drop for SensitiveBytes {
+    fn drop(&mut self) {
+        ::zeroize::Zeroize::zeroize(&mut self.value);
+    }
+}
+struct Wire {
+    value: ::zeroize::Zeroizing<::buffa::alloc::vec::Vec<u8>>,
+}
+#[derive(Clone, PartialEq, Default)]
+pub struct PublicValue {
+    pub value: u32,
+}
+impl ::core::fmt::Debug for PublicValue {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("PublicValue").field("value", &self.value).finish()
+    }
+}
+`,
+  );
+
+  context.assertGeneratedProtoHardeningPolicy({
+    hardeningScript: "harden.mjs",
+    generatedRust: "generated.rs",
+    requiredScriptNeedles: ["deserialize_zeroizing_bytes"],
+    secretByteFields: [{ message: "SensitiveBytes", field: "value" }],
+    requiredGeneratedNeedles: ["pub struct SensitiveBytes"],
+    forbiddenGeneratedNeedles: ["::buffa::alloc::format!("],
+    requireStrictJson: false,
+    requireUnknownFieldZeroization: false,
+  });
+});
+
+test("generated hardening requires recursive unknown-field zeroization", () => {
+  const root = createFixture();
+  writeFileSync(
+    join(root, "harden.mjs"),
+    `deserialize_zeroizing_bytes
+::buffa::UnknownFieldData::LengthDelimited(bytes)
+`,
+  );
+  writeFileSync(
+    join(root, "generated.rs"),
+    `fn __reallyme_zeroize_unknown_fields(fields: &mut ::buffa::UnknownFields) {
+    for mut field in ::core::mem::take(fields) {
+        if let ::buffa::UnknownFieldData::LengthDelimited(bytes) = &mut field.data {
+            ::zeroize::Zeroize::zeroize(bytes);
+        }
+    }
+}
+#[derive(Clone, PartialEq, Default)]
+pub struct SensitiveBytes {
+    pub value: ::buffa::alloc::vec::Vec<u8>,
+}
+impl ::core::fmt::Debug for SensitiveBytes {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("SensitiveBytes").field("value", &"<redacted>").finish()
+    }
+}
+impl ::core::ops::Drop for SensitiveBytes {
+    fn drop(&mut self) {
+        ::zeroize::Zeroize::zeroize(&mut self.value);
+        __reallyme_zeroize_unknown_fields(&mut self.__buffa_unknown_fields);
+    }
+}
+struct Wire {
+    value: ::zeroize::Zeroizing<::buffa::alloc::vec::Vec<u8>>,
+}
+`,
+  );
+
+  const result = runFixtureScript(
+    root,
+    `context.assertGeneratedProtoHardeningPolicy({
+  hardeningScript: "harden.mjs",
+  generatedRust: "generated.rs",
+  requiredScriptNeedles: ["deserialize_zeroizing_bytes"],
+  secretByteFields: [{ message: "SensitiveBytes", field: "value" }],
+  requiredGeneratedNeedles: ["pub struct SensitiveBytes"],
+  forbiddenGeneratedNeedles: ["::buffa::alloc::format!("],
+  requireStrictJson: false,
+});`,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stderr,
+    /harden\.mjs does not contain ::buffa::UnknownFieldData::Group\(fields\)/u,
+  );
 });
