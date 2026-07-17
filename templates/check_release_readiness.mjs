@@ -78,6 +78,7 @@ const repositoryPolicy = {
       generatedView: "REPLACE_GENERATED_VIEW_FILE",
       protoCargo: "REPLACE_PROTO_CARGO",
       requiredScriptNeedles: [
+        '"--check-idempotent"',
         "deserialize_zeroizing_bytes",
         "zeroize_unknown_fields",
         "deny_unknown_fields",

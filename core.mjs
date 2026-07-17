@@ -908,6 +908,7 @@ export function createReleaseReadinessContext(options) {
       requiredCargoNeedles = [],
       secretByteFields = [],
       additionalGeneratedPolicies = [],
+      requireIdempotence = true,
       requireStrictJson = true,
       requireUnknownFieldZeroization = true,
     } = policy ?? {};
@@ -935,6 +936,9 @@ export function createReleaseReadinessContext(options) {
     }
     if (requiredScriptNeedles.length === 0) {
       fail("generated proto hardening policy requires script invariants");
+    }
+    if (typeof requireIdempotence !== "boolean") {
+      fail("generated proto hardening idempotence policy must be a boolean");
     }
     if (requiredGeneratedNeedles.length === 0) {
       fail("generated proto hardening policy requires generated-code invariants");
@@ -1009,6 +1013,9 @@ export function createReleaseReadinessContext(options) {
 
     for (const needle of requiredScriptNeedles) {
       assertContains(hardeningScript, needle);
+    }
+    if (requireIdempotence) {
+      assertContains(hardeningScript, '"--check-idempotent"');
     }
     for (const needle of forbiddenScriptNeedles) {
       assertNotContains(hardeningScript, needle);
@@ -1919,6 +1926,8 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
       processProtoNeedle = "pub fn process_proto(",
       processProtoJsonNeedle = "pub fn process_proto_json(",
       binaryEnvelopeNeedle = "encode_proto_result_envelope",
+      requiredCodecNeedles = [],
+      forbiddenCodecNeedles = [],
       sdkAdapters = [],
     } = policy ?? {};
     for (const [name, value] of Object.entries({
@@ -1931,6 +1940,14 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
       if (typeof value !== "string" || value.length === 0) {
         fail(`protobuf boundary policy ${name} must be a non-empty string`);
       }
+    }
+    if (
+      !Array.isArray(requiredCodecNeedles) ||
+      requiredCodecNeedles.some((needle) => typeof needle !== "string" || needle.length === 0) ||
+      !Array.isArray(forbiddenCodecNeedles) ||
+      forbiddenCodecNeedles.some((needle) => typeof needle !== "string" || needle.length === 0)
+    ) {
+      fail("protobuf boundary codec needles must be arrays of non-empty strings");
     }
     if (
       !Array.isArray(sdkAdapters) ||
@@ -2011,6 +2028,12 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     assertContains(wirePath, processProtoJsonNeedle);
     assertContains(codecPath, "DecodeOptions::new()");
     assertContains(codecPath, binaryEnvelopeNeedle);
+    for (const needle of requiredCodecNeedles) {
+      assertContains(codecPath, needle);
+    }
+    for (const needle of forbiddenCodecNeedles) {
+      assertNotContains(codecPath, needle);
+    }
     assertNotContains(wirePath, "pub fn process_json(");
     assertNotContains(wirePath, "pub fn process_proto_with_operation");
     assertNotContains(wirePath, "pub fn process_proto_operation");

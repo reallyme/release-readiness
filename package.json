@@ -5,8 +5,11 @@
   "type": "module",
   "description": "Shared release-readiness guardrails for ReallyMe repositories.",
   "license": "Apache-2.0",
+  "bin": {
+    "reallyme-release-readiness": "scripts/run-consumer-check.mjs"
+  },
   "scripts": {
-    "check": "node --check core.mjs && node --check scripts/check_release_readiness.mjs && node --test test/*.test.mjs && node scripts/check_release_readiness.mjs"
+    "check": "node --check core.mjs && node --check scripts/check_release_readiness.mjs && node --check scripts/run-consumer-check.mjs && node --test test/*.test.mjs && node scripts/check_release_readiness.mjs"
   },
   "engines": {
     "node": ">=24"

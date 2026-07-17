@@ -11,8 +11,9 @@ SPDX-License-Identifier: Apache-2.0
 Shared release-readiness guardrails for ReallyMe repositories.
 
 This package contains a small, dependency-free Node.js core used by ReallyMe
-release scripts. Sister repositories can vendor the core byte-for-byte or pin a
-reviewed upstream revision so release checks do not drift between projects.
+release scripts. Sister repositories can vendor the core byte-for-byte for
+offline local use. Remote CI should execute the current shared repository
+runner so policy fixes do not remain trapped in stale local copies.
 
 ## What It Checks
 
@@ -54,6 +55,19 @@ cp core.mjs ../crypto/scripts/release-readiness/core.mjs
 cp core.mjs ../cose/scripts/release-readiness/core.mjs
 ```
 
+Remote CI must pin this repository by a reviewed full commit SHA. Never use a
+mutable branch or tag in a credential-bearing workflow:
+
+```sh
+npm exec --yes --package=github:reallyme/release-readiness#FULL_COMMIT_SHA -- \
+  reallyme-release-readiness
+```
+
+Arguments after `reallyme-release-readiness` are passed to the consumer's
+`scripts/check_release_readiness.mjs`. The runner requires the tracked vendored
+core to be byte-for-byte identical to its immutable upstream core before it
+runs the consumer checker.
+
 For a new Rust/protobuf repository, start from
 [`templates/check_release_readiness.mjs`](templates/check_release_readiness.mjs)
 and the companion [`templates/README.md`](templates/README.md). The template
@@ -63,6 +77,9 @@ Generated protobuf freshness checks should snapshot generated outputs, run
 `buf lint`, `buf generate`, the repository hardening script such as
 `harden-generated-example-proto.mjs`, and `cargo fmt`, then compare the updated
 generated tree plus every tracked or non-ignored file outside the declared generated directories.
+Hardening scripts must also support `--check-idempotent`; repository checkers
+run that mode against checked-in output so a second pass cannot accumulate
+comments, derives, debug implementations, or drop implementations.
 
 ## Protobuf Notes
 

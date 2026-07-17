@@ -27,8 +27,19 @@ if (packageJson.name !== "@reallyme/release-readiness") {
 if (packageJson.license !== "Apache-2.0") {
   fail("package license must remain Apache-2.0");
 }
+for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]) {
+  if (packageJson[field] !== undefined && Object.keys(packageJson[field]).length !== 0) {
+    fail(`package ${field} must remain empty`);
+  }
+}
 
 assertContains("core.mjs", "RELEASE_READINESS_CORE_CONTRACT_VERSION = 6");
+assertContains("package.json", '"reallyme-release-readiness": "scripts/run-consumer-check.mjs"');
+assertContains("scripts/run-consumer-check.mjs", "timingSafeEqual");
+assertContains("scripts/run-consumer-check.mjs", "shared core does not match the pinned package");
+assertContains("scripts/run-consumer-check.mjs", "MAX_SHARED_CORE_BYTES");
+assertContains("README.md", "github:reallyme/release-readiness#FULL_COMMIT_SHA");
+assertNotContains("README.md", "release-readiness#main");
 assertContains("core.mjs", "assertGeneratedArtifactsFresh");
 assertContains("core.mjs", "assertGeneratedProtoHardeningPolicy");
 assertContains("core.mjs", "assertReallyMeProtobufReleasePolicy");
@@ -49,6 +60,8 @@ assertContains("core.mjs", "assertRepositorySnapshotsEqual");
 assertContains("core.mjs", 'createHash("sha256")');
 assertContains("core.mjs", "assertProtoContract");
 assertContains("core.mjs", "assertReallyMeProtoBoundaryContract");
+assertContains("core.mjs", "requiredCodecNeedles");
+assertContains("core.mjs", "forbiddenCodecNeedles");
 assertContains("core.mjs", "assertNodeWorkflowJobsPinNode");
 assertContains("core.mjs", "assertWorkflowRunStep");
 assertContains("core.mjs", "assertWorkflowUsesStep");

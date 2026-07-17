@@ -629,6 +629,7 @@ type Output = Zeroizing<Vec<u8>>;
 fn check(_: OperationRequest, _: ResultEnvelope) {
     let _ = DecodeOptions::new();
 }
+fn decode_json() { serde_json::from_slice(bytes); }
 pub fn process_proto() {}
 pub fn process_proto_json() {}
 fn encode_proto_result_envelope() {}
@@ -651,6 +652,8 @@ public func processProtoJson(_ requestJson: [UInt8]) {}
     protoReadme: "README.md",
     protoCargo: "Cargo.toml",
     wirePath: "wire.rs",
+    requiredCodecNeedles: ["serde_json::from_slice(bytes)"],
+    forbiddenCodecNeedles: ["serde_json::Value"],
     sdkAdapters: [
       {
         path: "swift.swift",
@@ -820,7 +823,10 @@ test("local checker template is syntactically valid and fails closed by construc
 test("generated hardening supports message-scoped sensitive field names", () => {
   const root = createFixture();
   const context = createContext(root);
-  writeFileSync(join(root, "harden.mjs"), "deserialize_zeroizing_bytes\n");
+  writeFileSync(
+    join(root, "harden.mjs"),
+    'const option = "--check-idempotent";\ndeserialize_zeroizing_bytes\n',
+  );
   writeFileSync(
     join(root, "generated.rs"),
     `#[derive(Clone, PartialEq, Default)]
@@ -862,6 +868,23 @@ impl ::core::fmt::Debug for PublicValue {
     requireStrictJson: false,
     requireUnknownFieldZeroization: false,
   });
+
+  writeFileSync(join(root, "harden.mjs"), "deserialize_zeroizing_bytes\n");
+  const result = runFixtureScript(
+    root,
+    `context.assertGeneratedProtoHardeningPolicy({
+  hardeningScript: "harden.mjs",
+  generatedRust: "generated.rs",
+  requiredScriptNeedles: ["deserialize_zeroizing_bytes"],
+  secretByteFields: [{ message: "SensitiveBytes", field: "value" }],
+  requiredGeneratedNeedles: ["pub struct SensitiveBytes"],
+  forbiddenGeneratedNeedles: ["::buffa::alloc::format!("],
+  requireStrictJson: false,
+  requireUnknownFieldZeroization: false,
+});`,
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /does not contain "--check-idempotent"/u);
 });
 
 test("generated hardening requires recursive unknown-field zeroization", () => {
@@ -869,6 +892,7 @@ test("generated hardening requires recursive unknown-field zeroization", () => {
   writeFileSync(
     join(root, "harden.mjs"),
     `deserialize_zeroizing_bytes
+const option = "--check-idempotent";
 ::buffa::UnknownFieldData::LengthDelimited(bytes)
 `,
   );
