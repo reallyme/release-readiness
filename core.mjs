@@ -11,7 +11,7 @@ import { spawnSync } from "node:child_process";
 // This module is intentionally written as a standalone, vendorable release
 // readiness core. Sister repositories should copy it byte-for-byte or consume a
 // pinned upstream revision so release-critical checks do not drift silently.
-export const RELEASE_READINESS_CORE_CONTRACT_VERSION = 7;
+export const RELEASE_READINESS_CORE_CONTRACT_VERSION = 8;
 
 const DEFAULT_FAILURE_PREFIX = "release readiness check failed";
 
@@ -63,6 +63,70 @@ const scrubProtoCommentsAndStrings = (source) => {
     } else if (
       (state === "double-quoted-string" && character === '"') ||
       (state === "single-quoted-string" && character === "'")
+    ) {
+      output += " ";
+      state = "normal";
+    } else {
+      output += character === "\n" ? "\n" : " ";
+    }
+  }
+  return output;
+};
+
+const scrubJavaScriptCommentsAndStrings = (source) => {
+  let output = "";
+  let state = "normal";
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    const next = source[index + 1];
+    if (state === "normal") {
+      if (character === "/" && next === "/") {
+        output += "  ";
+        index += 1;
+        state = "line-comment";
+      } else if (character === "/" && next === "*") {
+        output += "  ";
+        index += 1;
+        state = "block-comment";
+      } else if (character === '"' || character === "'" || character === "`") {
+        output += " ";
+        state =
+          character === '"'
+            ? "double-quoted-string"
+            : character === "'"
+              ? "single-quoted-string"
+              : "template-string";
+      } else {
+        output += character;
+      }
+      continue;
+    }
+    if (state === "line-comment") {
+      if (character === "\n") {
+        output += "\n";
+        state = "normal";
+      } else {
+        output += " ";
+      }
+      continue;
+    }
+    if (state === "block-comment") {
+      if (character === "*" && next === "/") {
+        output += "  ";
+        index += 1;
+        state = "normal";
+      } else {
+        output += character === "\n" ? "\n" : " ";
+      }
+      continue;
+    }
+    if (character === "\\" && next !== undefined) {
+      output += next === "\n" ? " \n" : "  ";
+      index += 1;
+    } else if (
+      (state === "double-quoted-string" && character === '"') ||
+      (state === "single-quoted-string" && character === "'") ||
+      (state === "template-string" && character === "`")
     ) {
       output += " ";
       state = "normal";
@@ -1024,9 +1088,9 @@ export function createReleaseReadinessContext(options) {
         typeof entry === "object" &&
         !Array.isArray(entry) &&
         typeof entry.message === "string" &&
-        /^[A-Z][A-Za-z0-9]*$/u.test(entry.message) &&
+        /^[A-Za-z_][A-Za-z0-9_]*$/u.test(entry.message) &&
         typeof entry.field === "string" &&
-        /^[a-z][a-z0-9_]*$/u.test(entry.field) &&
+        /^[A-Za-z_][A-Za-z0-9_]*$/u.test(entry.field) &&
         (entry.kind === "bytes" || entry.kind === "string") &&
         (entry.sensitivity === "sensitive" || entry.sensitivity === "public") &&
         Object.keys(entry).every((key) =>
@@ -1054,7 +1118,7 @@ export function createReleaseReadinessContext(options) {
     }
     const protoText = scrubProtoCommentsAndStrings(readText(protoSchema));
     const scalarSchemaKeys = new Set();
-    const messagePattern = /^\s*message\s+([A-Z][A-Za-z0-9]*)\s*\{/gmu;
+    const messagePattern = /^\s*message\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{/gmu;
     for (const messageMatch of protoText.matchAll(messagePattern)) {
       const openIndex = messageMatch.index + messageMatch[0].lastIndexOf("{");
       let depth = 0;
@@ -1074,7 +1138,7 @@ export function createReleaseReadinessContext(options) {
         fail(`${protoSchema} has an unterminated message ${messageMatch[1]}`);
       }
       const body = protoText.slice(openIndex + 1, closeIndex);
-      if (/^\s+message\s+[A-Z][A-Za-z0-9]*\s*\{/mu.test(body)) {
+      if (/^\s+message\s+[A-Za-z_][A-Za-z0-9_]*\s*\{/mu.test(body)) {
         fail(
           `${protoSchema} nested messages require an explicit scalar-classifier extension`,
         );
@@ -1085,7 +1149,7 @@ export function createReleaseReadinessContext(options) {
         );
       }
       for (const fieldMatch of body.matchAll(
-        /(?:^|[;{}])\s*(?:(?:optional|required|repeated)\s+)?(bytes|string)\s+([a-z][a-z0-9_]*)\s*=\s*\d+(?:\s*\[[^\]]*\])?\s*(?=;)/gmu,
+        /(?:^|[;{}])\s*(?:(?:optional|required|repeated)\s+)?(bytes|string)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\d+(?:\s*\[[^\]]*\])?\s*(?=;)/gmu,
       )) {
         scalarSchemaKeys.add(`${messageMatch[1]}.${fieldMatch[2]}:${fieldMatch[1]}`);
       }
@@ -1323,25 +1387,55 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
 
     requireTracked(scriptPath);
     requireTracked(corePath);
+    const executableCore = scrubJavaScriptCommentsAndStrings(readText(corePath));
+    const requireCoreDeclaration = (name) => {
+      const declaration = new RegExp(
+        `\\b(?:const|function)\\s+${escapeRegExp(name)}\\b`,
+        "u",
+      );
+      if (!declaration.test(executableCore)) {
+        fail(`${corePath} must define ${name}`);
+      }
+    };
+    const requireCoreExport = (name) => {
+      const exportPattern = new RegExp(`\\b${escapeRegExp(name)}\\s*,`, "u");
+      if (!exportPattern.test(executableCore)) {
+        fail(`${corePath} must export ${name}`);
+      }
+    };
+
     assertContains(corePath, `RELEASE_READINESS_CORE_CONTRACT_VERSION = ${contractVersion}`);
-    assertContains(corePath, "assertGeneratedArtifactsFresh");
-    assertContains(corePath, "assertGeneratedProtoHardeningPolicy");
-    assertContains(corePath, "assertReallyMeProtobufReleasePolicy");
-    assertContains(corePath, "assertReallyMeVendoredCorePolicy");
-    assertContains(corePath, "assertReallyMeRustProtoRepositoryPolicy");
-    assertContains(corePath, "assertCargoMetadataPolicy");
-    assertContains(corePath, "assertCargoWorkspacePolicy");
-    assertContains(corePath, "assertTextPolicy");
-    assertContains(corePath, "assertSpdxHeaders");
-    assertContains(corePath, "assertWorkflowActionsPinned");
-    assertContains(corePath, "assertWorkflowPolicy");
-    assertContains(corePath, "runCommands");
-    assertContains(corePath, "scalarFieldClassifications");
-    assertContains(corePath, "assertProtoContract");
-    assertContains(corePath, "assertReallyMeProtoBoundaryContract");
-    assertContains(corePath, "assertReallyMeOperationBoundaryContract");
-    assertContains(corePath, "assertWorkflowRunStep");
-    assertContains(corePath, "assertWorkflowUsesStep");
+    for (const name of [
+      "assertGeneratedArtifactsFresh",
+      "assertGeneratedProtoHardeningPolicy",
+      "assertReallyMeProtobufReleasePolicy",
+      "assertReallyMeVendoredCorePolicy",
+      "assertReallyMeRustProtoRepositoryPolicy",
+      "assertCargoMetadataPolicy",
+      "assertCargoWorkspacePolicy",
+      "assertTextPolicy",
+      "assertSpdxHeaders",
+      "assertWorkflowActionsPinned",
+      "assertWorkflowPolicy",
+      "runCommands",
+      "assertProtoContract",
+      "assertReallyMeProtoBoundaryContract",
+      "assertReallyMeOperationBoundaryContract",
+      "assertWorkflowRunStep",
+      "assertWorkflowUsesStep",
+    ]) {
+      requireCoreDeclaration(name);
+      requireCoreExport(name);
+    }
+    for (const identifier of [
+      "scalarFieldClassifications",
+      "messagePattern",
+      "scalarSchemaKeys",
+    ]) {
+      if (!new RegExp(`\\b${escapeRegExp(identifier)}\\b`, "u").test(executableCore)) {
+        fail(`${corePath} must enforce ${identifier}`);
+      }
+    }
   };
 
   const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");

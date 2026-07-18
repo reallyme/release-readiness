@@ -33,7 +33,7 @@ for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]
   }
 }
 
-assertContains("core.mjs", "RELEASE_READINESS_CORE_CONTRACT_VERSION = 7");
+assertContains("core.mjs", "RELEASE_READINESS_CORE_CONTRACT_VERSION = 8");
 assertContains("package.json", '"reallyme-release-readiness": "scripts/run-consumer-check.mjs"');
 assertContains("scripts/run-consumer-check.mjs", "timingSafeEqual");
 assertContains("scripts/run-consumer-check.mjs", "shared core does not match the pinned package");
@@ -85,7 +85,7 @@ assertContains("README.md", "Generated protobuf hardening checks");
 assertContains("README.md", "buf generate");
 assertContains("README.md", "harden-generated-example-proto.mjs");
 assertContains("README.md", "actions/workflows/checks.yml/badge.svg");
-assertContains("README.md", "RELEASE_READINESS_CORE_CONTRACT_VERSION = 7");
+assertContains("README.md", "RELEASE_READINESS_CORE_CONTRACT_VERSION = 8");
 assertContains("core.mjs", "scalarFieldClassifications");
 assertContains("core.mjs", "unclassified protobuf scalar field");
 assertContains("templates/check_release_readiness.mjs", "scalarFieldClassifications");

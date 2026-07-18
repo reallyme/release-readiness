@@ -1358,6 +1358,98 @@ message SensitiveBytes { bytes value = 1; optional ${kind} newly_added_secret = 
   }
 });
 
+test("generated hardening rejects legal non-style protobuf scalar identifiers", () => {
+  const root = createFixture();
+  writeFileSync(join(root, "harden.mjs"), 'const option = "--check-idempotent";\nredact\n');
+  writeFileSync(
+    join(root, "schema.proto"),
+    `syntax = "proto3";
+message Codec_Secret {
+  bytes sessionToken = 1;
+  string displayName = 2;
+}
+`,
+  );
+  writeFileSync(
+    join(root, "generated.rs"),
+    `pub struct Codec_Secret {
+    pub sessionToken: ::buffa::alloc::vec::Vec<u8>,
+    pub displayName: ::buffa::alloc::string::String,
+}
+`,
+  );
+
+  const result = runFixtureScript(
+    root,
+    `context.assertGeneratedProtoHardeningPolicy({
+  hardeningScript: "harden.mjs",
+  protoSchema: "schema.proto",
+  generatedRust: "generated.rs",
+  requiredScriptNeedles: ["redact"],
+  scalarFieldClassifications: [{
+    message: "Codec_Secret",
+    field: "displayName",
+    kind: "string",
+    sensitivity: "public",
+  }],
+  requiredGeneratedNeedles: ["pub struct Codec_Secret"],
+  forbiddenGeneratedNeedles: ["::buffa::alloc::format!("],
+  requireStrictJson: false,
+  requireUnknownFieldZeroization: false,
+});`,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stderr,
+    /schema\.proto has unclassified protobuf scalar field Codec_Secret\.sessionToken:bytes/u,
+  );
+});
+
+test("vendored core policy rejects assertions hidden in strings", () => {
+  const root = createTrackedFixture();
+  writeFileSync(
+    join(root, "scripts", "release-readiness", "core.mjs"),
+    `export const RELEASE_READINESS_CORE_CONTRACT_VERSION = 8;
+const assertReallyMeVendoredCorePolicy = () => {
+  "assertGeneratedArtifactsFresh";
+  "assertGeneratedProtoHardeningPolicy";
+  "assertReallyMeProtobufReleasePolicy";
+  "assertReallyMeVendoredCorePolicy";
+  "assertReallyMeRustProtoRepositoryPolicy";
+  "assertCargoMetadataPolicy";
+  "assertCargoWorkspacePolicy";
+  "assertTextPolicy";
+  "assertSpdxHeaders";
+  "assertWorkflowActionsPinned";
+  "assertWorkflowPolicy";
+  "runCommands";
+  "assertProtoContract";
+  "assertReallyMeProtoBoundaryContract";
+  "assertReallyMeOperationBoundaryContract";
+  "assertWorkflowRunStep";
+  "assertWorkflowUsesStep";
+  "scalarFieldClassifications";
+};
+export { assertReallyMeVendoredCorePolicy };
+`,
+  );
+
+  const result = runFixtureScript(
+    root,
+    `context.assertReallyMeVendoredCorePolicy({
+  scriptPath: "scripts/release-readiness/core.mjs",
+  corePath: "scripts/release-readiness/core.mjs",
+});`,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stderr,
+    /scripts\/release-readiness\/core\.mjs must define assertGeneratedArtifactsFresh/u,
+  );
+});
+
 test("generated hardening handles indented messages and single-quoted options", () => {
   const root = createFixture();
   const context = createContext(root);
