@@ -262,12 +262,16 @@ export function createReleaseReadinessContext(options) {
 
   const listFiles = (path) => {
     resolveRepositoryPath(path);
+    const directory = assertRepositoryDirectory(path);
     const prefix = `${path}/`;
     if (requireTrackedFiles) {
-      return [...loadTrackedFiles()].filter((file) => file.startsWith(prefix));
+      const files = [...loadTrackedFiles()].filter((file) => file.startsWith(prefix));
+      if (files.length === 0) {
+        fail(`${path} has no tracked files`);
+      }
+      return files;
     }
 
-    const directory = assertRepositoryDirectory(path);
     const files = [];
     const visit = (current) => {
       for (const entry of readdirSync(current).sort()) {

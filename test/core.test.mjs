@@ -198,6 +198,28 @@ test("repository reads reject absolute paths and symlink traversal", () => {
   assert.match(symlinkResult.stderr, /resolves outside the repository root/u);
 });
 
+test("tracked file listing fails closed for missing directories", () => {
+  const root = createTrackedFixture();
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      `import { createReleaseReadinessContext } from ${JSON.stringify(coreUrl)};
+const context = createReleaseReadinessContext({
+  scriptUrl: ${JSON.stringify(pathToFileURL(join(root, "scripts", "check.mjs")).href)},
+  requireTrackedFiles: true,
+});
+context.listFiles("generated-missing");`,
+    ],
+    { cwd: root, encoding: "utf8" },
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /release readiness check failed:/u);
+  assert.doesNotMatch(result.stderr, /has no tracked files/u);
+});
+
 test("workflow action policy rejects floating action references", () => {
   const root = createFixture();
   writeFileSync(
