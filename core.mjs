@@ -1715,6 +1715,9 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     for (const job of extractWorkflowJobs(path)) {
       const headers = [];
       for (let index = job.start + 1; index < job.end; index += 1) {
+        if (/^ {4}permissions:\s+\S/u.test(lines[index])) {
+          fail(`${path} job ${job.name} permissions must be a flat explicit mapping`);
+        }
         if (/^ {4}permissions:\s*$/u.test(lines[index])) {
           headers.push(index);
         }
@@ -1908,6 +1911,43 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     }
   };
 
+  const extractWorkflowRunCommands = (path) => {
+    const lines = readText(path).replace(/\r\n/gu, "\n").split("\n");
+    const commands = [];
+    for (let index = 0; index < lines.length; index += 1) {
+      const runMatch = /^(\s*)(?:-\s+)?run:\s*(.*)\s*$/u.exec(lines[index]);
+      if (runMatch === null) {
+        continue;
+      }
+      const runIndent = runMatch[1].length;
+      const marker = runMatch[2].trim();
+      if (marker === ">") {
+        fail(`${path} uses an unsupported folded run scalar`);
+      }
+      if (marker === "|") {
+        const blockLines = [];
+        for (let blockCursor = index + 1; blockCursor < lines.length; blockCursor += 1) {
+          const blockLine = lines[blockCursor];
+          if (blockLine.trim().length !== 0 && countLeadingSpaces(blockLine) <= runIndent) {
+            break;
+          }
+          blockLines.push(blockLine);
+        }
+        const nonBlankIndents = blockLines
+          .filter((line) => line.trim().length !== 0)
+          .map((line) => countLeadingSpaces(line));
+        const blockIndent =
+          nonBlankIndents.length === 0 ? runIndent + 2 : Math.min(...nonBlankIndents);
+        commands.push(
+          blockLines.map((line) => line.slice(Math.min(blockIndent, line.length))).join("\n"),
+        );
+      } else {
+        commands.push(unquoteWorkflowScalar(marker));
+      }
+    }
+    return commands;
+  };
+
   const assertCargoFuzzWorkflowPolicy = (policy) => {
     const {
       workflow = ".github/workflows/fuzz.yml",
@@ -1963,17 +2003,21 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     }
 
     const text = readText(workflow).replace(/\r\n/gu, "\n");
-    const installSteps = extractWorkflowSteps(workflow).filter(
-      (step) =>
-        step.run !== null &&
-        normalizeWorkflowRunCommand(step.run)
-          .split("\n")
-          .some(
-            (line) =>
-              /^cargo\s+install(?:\s|$)/u.test(line.trim()) &&
-              /(?:^|\s)cargo-fuzz(?:\s|$)/u.test(line.trim()),
-          ),
+    const workflowRuns = extractWorkflowSteps(workflow)
+      .filter((step) => step.run !== null)
+      .map((step) => ({ ...step, command: normalizeWorkflowRunCommand(step.run) }));
+    const allInstallCommands = extractWorkflowRunCommands(workflow).filter(
+      (command) =>
+        /^cargo\s+install(?:\s|$)/mu.test(normalizeWorkflowRunCommand(command)) &&
+        /(?:^|\s)cargo-fuzz(?:\s|$)/u.test(normalizeWorkflowRunCommand(command)),
     );
+    const installSteps = workflowRuns.filter((step) =>
+      /^cargo\s+install(?:\s|$)/mu.test(step.command) &&
+      /(?:^|\s)cargo-fuzz(?:\s|$)/u.test(step.command),
+    );
+    if (installSteps.length !== allInstallCommands.length) {
+      fail(`${workflow} cargo-fuzz installation must be in a named workflow step`);
+    }
     if (installSteps.length < minimumInstallations) {
       fail(
         `${workflow} must install cargo-fuzz at least ${minimumInstallations} times`,

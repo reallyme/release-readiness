@@ -402,6 +402,47 @@ jobs:
   assert.match(ambiguousResult.stderr, /exactly one exact version or Git revision/u);
 });
 
+test("cargo-fuzz workflow policy inspects unnamed and multiline installs", () => {
+  const root = createFixture();
+  writeFileSync(
+    join(root, ".github", "workflows", "fuzz.yml"),
+    `name: Fuzz
+on: push
+jobs:
+  immediate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+      - run: cargo install cargo-fuzz --version 0.13.2
+  scheduled:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install cargo-fuzz
+        run: |
+          cargo install \\
+            --version 0.13.2 \\
+            --locked \\
+            cargo-fuzz
+`,
+  );
+  const result = runFixtureScript(
+    root,
+    `context.assertCargoFuzzWorkflowPolicy({
+  workflow: ".github/workflows/fuzz.yml",
+  version: "0.13.2",
+  minimumInstallations: 2,
+  requiredInstallSteps: [
+    { job: "immediate", name: "Install cargo-fuzz" },
+    { job: "scheduled", name: "Install cargo-fuzz" },
+  ],
+});`,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /cargo-fuzz installation must be in a named workflow step/u);
+});
+
 test("workflow permissions policy validates exact scopes by structural location", () => {
   const root = createFixture();
   const workflow = join(root, ".github", "workflows", "release.yml");
@@ -448,6 +489,35 @@ jobs:
   );
   assert.equal(result.status, 1);
   assert.match(result.stderr, /permissions changed/u);
+});
+
+test("workflow permissions policy rejects job-level inline permissions syntax", () => {
+  const root = createFixture();
+  for (const inlinePermissions of ["write-all", "{contents: write}"]) {
+    writeFileSync(
+      join(root, ".github", "workflows", "release.yml"),
+      `name: Release
+permissions:
+  contents: read
+jobs:
+  publish:
+    permissions: ${inlinePermissions}
+    steps:
+      - name: Publish
+        run: true
+`,
+    );
+    const result = runFixtureScript(
+      root,
+      `context.assertWorkflowPermissionsPolicy({
+  path: ".github/workflows/release.yml",
+  workflow: { contents: "read" },
+  jobs: {},
+});`,
+    );
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /permissions must be a flat explicit mapping/u);
+  }
 });
 
 test("Node workflow policy detects corepack-based Node tooling", () => {
