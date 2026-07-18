@@ -61,6 +61,7 @@ assertContains("core.mjs", "assertRepositorySnapshotsEqual");
 assertContains("core.mjs", 'createHash("sha256")');
 assertContains("core.mjs", "assertProtoContract");
 assertContains("core.mjs", "assertReallyMeProtoBoundaryContract");
+assertContains("core.mjs", "assertReallyMeOperationBoundaryContract");
 assertContains("core.mjs", "requiredCodecNeedles");
 assertContains("core.mjs", "forbiddenCodecNeedles");
 assertContains("core.mjs", "assertNodeWorkflowJobsPinNode");

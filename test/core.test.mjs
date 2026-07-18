@@ -911,6 +911,164 @@ public func processProto(_ request: [UInt8]) {}
   assert.match(result.stderr, /swift\.swift does not contain public func processProtoJson\(/u);
 });
 
+test("ReallyMe operation boundary contract requires generated response outcomes", () => {
+  const root = createFixture();
+  const context = createContext(root);
+  writeFileSync(
+    join(root, "contract.proto"),
+    `syntax = "proto3";
+message OperationRequest {
+  oneof operation {
+    SignRequest sign = 1;
+  }
+}
+message OperationResult {
+  oneof result {
+    SignResult sign = 1;
+  }
+}
+message OperationResponse {
+  oneof outcome {
+    OperationResult result = 1;
+    CodecError error = 2;
+  }
+}
+service OperationService {
+  rpc Process(OperationRequest) returns (OperationResponse);
+}
+message CodecError {
+  uint32 reason = 1;
+}
+message SignRequest {
+  bytes payload = 1;
+}
+message SignResult {
+  bytes signature = 1;
+}
+`,
+  );
+  writeFileSync(
+    join(root, "README.md"),
+    `This crate defines messages only; it intentionally declares no protobuf service.
+JSON is a generated ProtoJSON request convenience. Results remain one fully discriminated operation response.
+`,
+  );
+  writeFileSync(
+    join(root, "buf.gen.yaml"),
+    `version: v2
+plugins:
+  - local: protoc-gen-buffa
+    out: generated
+    opt: [views=true,json=true]
+`,
+  );
+  writeFileSync(
+    join(root, "Cargo.toml"),
+    '[features]\ngenerated = ["buffa/json", "zeroize"]\n',
+  );
+  writeFileSync(
+    join(root, "wire.rs"),
+    `use zeroize::Zeroizing;
+type Output = Zeroizing<Vec<u8>>;
+fn check(_: OperationRequest, _: OperationResponse) {
+    let _ = DecodeOptions::new();
+}
+pub fn process_operation_response() {}
+pub fn process_operation_response_json() {}
+fn codec_error() {}
+`,
+  );
+  writeFileSync(
+    join(root, "swift.swift"),
+    `// OperationResponse
+// ZEROIZING_OUTPUT
+public func processOperation(_ request: [UInt8]) {}
+public func processOperationJson(_ requestJson: [UInt8]) {}
+`,
+  );
+
+  context.assertReallyMeOperationBoundaryContract({
+    protoPath: "contract.proto",
+    operationRequest: "OperationRequest",
+    operationResponse: "OperationResponse",
+    operationResult: "OperationResult",
+    protoReadme: "README.md",
+    protoCargo: "Cargo.toml",
+    wirePath: "wire.rs",
+    codecPath: "wire.rs",
+    binaryResponseNeedle: "codec_error",
+    forbiddenCodecNeedles: ["CodecProtoResultEnvelope"],
+    sdkAdapters: [
+      {
+        path: "swift.swift",
+        processOperationNeedle: "public func processOperation(_ request: [UInt8])",
+        processOperationJsonNeedle:
+          "public func processOperationJson(_ requestJson: [UInt8])",
+        requiredNeedles: ["// ZEROIZING_OUTPUT"],
+      },
+    ],
+  });
+
+  const serviceRejected = runFixtureScript(
+    root,
+    `context.assertReallyMeOperationBoundaryContract({
+  protoPath: "contract.proto",
+  operationRequest: "OperationRequest",
+  operationResponse: "OperationResponse",
+  operationResult: "OperationResult",
+  protoReadme: "README.md",
+  protoCargo: "Cargo.toml",
+  wirePath: "wire.rs",
+  allowServices: false,
+});`,
+  );
+  assert.equal(serviceRejected.status, 1);
+  assert.match(serviceRejected.stderr, /must define messages only and no protobuf service/u);
+
+  writeFileSync(
+    join(root, "contract.proto"),
+    `syntax = "proto3";
+message OperationRequest {
+  oneof operation {
+    SignRequest sign = 1;
+  }
+}
+message OperationResult {
+  oneof result {
+    SignResult sign = 1;
+  }
+}
+message OperationResponse {
+  OperationResult result = 1;
+}
+message CodecError {
+  uint32 reason = 1;
+}
+message SignRequest {
+  bytes payload = 1;
+}
+message SignResult {
+  bytes signature = 1;
+}
+`,
+  );
+  const result = runFixtureScript(
+    root,
+    `context.assertReallyMeOperationBoundaryContract({
+  protoPath: "contract.proto",
+  operationRequest: "OperationRequest",
+  operationResponse: "OperationResponse",
+  operationResult: "OperationResult",
+  protoReadme: "README.md",
+  protoCargo: "Cargo.toml",
+  wirePath: "wire.rs",
+});`,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /OperationResponse must contain a generated result\/error outcome oneof/u);
+});
+
 test("aggregate Rust protobuf policy rejects duplicate freshness configuration", () => {
   const root = createFixture();
   const result = runFixtureScript(

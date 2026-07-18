@@ -56,15 +56,17 @@ const repositoryPolicy = {
   protobufBoundary: {
     protoPath: "REPLACE_PROTO_PATH",
     operationRequest: "REPLACE_COMPONENTOperationRequest",
-    resultEnvelope: "REPLACE_COMPONENTProtoResultEnvelope",
-    resultStatus: "REPLACE_COMPONENTProtoResultStatus",
+    operationResponse: "REPLACE_COMPONENTOperationResponse",
     protoReadme: "REPLACE_PROTO_README",
     protoCargo: "REPLACE_PROTO_CARGO",
     wirePath: "REPLACE_PROCESS_ADAPTER_PATH",
     codecPath: "REPLACE_PROTO_CODEC_PATH",
+    // Leave true for service-capable schemas. Set false only for repositories
+    // that intentionally publish messages and no protobuf service.
+    allowServices: true,
     // Declare every public SDK transport adapter here. Each adapter must expose
-    // both generic entrypoints and reference the binary result envelope. Use
-    // requiredNeedles/forbiddenNeedles for lane-specific hardening invariants.
+    // both generated operation-response entrypoints. Use requiredNeedles and
+    // forbiddenNeedles for lane-specific hardening invariants.
     sdkAdapters: [],
   },
   protobufRelease: {
