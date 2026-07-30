@@ -38,7 +38,7 @@ The current vendored-core contract marker is:
 ```js
 assertContains(
   "scripts/release-readiness/core.mjs",
-  "RELEASE_READINESS_CORE_CONTRACT_VERSION = 8",
+  "RELEASE_READINESS_CORE_CONTRACT_VERSION = 9",
 );
 ```
 
