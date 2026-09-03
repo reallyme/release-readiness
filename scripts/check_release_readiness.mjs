@@ -70,6 +70,10 @@ assertContains("core.mjs", "assertRepositorySnapshotsEqual");
 assertContains("core.mjs", 'createHash("sha256")');
 assertContains("core.mjs", "assertProtoContract");
 assertContains("core.mjs", "assertReallyMeOperationBoundaryContract");
+assertContains("core.mjs", "assertGranularProviderBoundary");
+assertContains("core.mjs", "assertPathsAbsent");
+assertContains("core.mjs", "provider request and result oneofs must contain only declared granular operations");
+assertContains("core.mjs", "lstat observes broken symlinks");
 assertContains("core.mjs", "requiredCodecNeedles");
 assertContains("core.mjs", "forbiddenCodecNeedles");
 assertContains("core.mjs", "assertNodeWorkflowJobsPinNode");
@@ -90,6 +94,8 @@ assertContains(
   "node-version: \"24\"",
 );
 assertContains("README.md", "Generated protobuf hardening checks");
+assertContains("README.md", "Granular provider contracts");
+assertContains("README.md", "retired-path enforcement");
 assertContains("README.md", "buf generate");
 assertContains("README.md", "harden-generated-example-proto.mjs");
 assertContains("README.md", "actions/workflows/checks.yml/badge.svg");
@@ -121,6 +127,9 @@ assertContains(
   "templates/check_release_readiness.mjs",
   "reallyMeLatestStableDependencies: true",
 );
+assertContains("templates/check_release_readiness.mjs", "granularProviderBoundary");
+assertContains("templates/check_release_readiness.mjs", "operations: [");
+assertContains("templates/check_release_readiness.mjs", "retiredPaths: []");
 assertContains(
   "templates/check_release_readiness.mjs",
   'requiredInstallSteps: [',
