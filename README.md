@@ -29,6 +29,11 @@ runner so policy fixes do not remain trapped in stale local copies.
 - SPDX headers for tracked source files.
 - Protobuf schema contracts, generated output freshness, and adapter boundary
   checks.
+- Granular provider contracts with exact descriptor/request/result/error/response
+  surfaces, unique operation parity, correlation, typed outcomes,
+  service-separation, codec, runtime, and adapter checks.
+- Explicit retired-path enforcement so deprecated examples, trackers, and
+  compatibility surfaces cannot remain present or tracked unnoticed.
 - Generated protobuf hardening checks for redacted Debug output, strict
   ProtoJSON, zeroizing temporary byte owners, recursive unknown-field wiping,
   final-owner zeroization, and closed-world sensitivity classification for

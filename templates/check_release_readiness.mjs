@@ -72,6 +72,28 @@ const repositoryPolicy = {
     // forbiddenNeedles for lane-specific hardening invariants.
     sdkAdapters: [],
   },
+  // Add granularProviderBoundary when the repository delegates selected
+  // operations to a host provider. The shared checker then enforces exact
+  // message surfaces, unique request/result parity, request/response
+  // correlation, typed outcomes, service separation, and every declared adapter.
+  // granularProviderBoundary: {
+  //   protoPath: "REPLACE_PROVIDER_PROTO_PATH",
+  //   codecPath: "REPLACE_PROVIDER_CODEC_PATH",
+  //   runtimePath: "REPLACE_PROVIDER_RUNTIME_PATH",
+  //   requiredCodecNeedles: [],
+  //   requiredRuntimeNeedles: [],
+  //   operations: [
+  //     {
+  //       fieldName: "REPLACE_OPERATION_FIELD",
+  //       requestType: "REPLACE_REQUEST_MESSAGE",
+  //       resultType: "REPLACE_RESULT_MESSAGE",
+  //       number: 1,
+  //     },
+  //   ],
+  //   adapters: [],
+  //   retiredPaths: [],
+  // },
+  retiredPaths: [],
   protobufRelease: {
     workflow: ".github/workflows/protobuf-ci.yml",
     workflowMode: "delegated",

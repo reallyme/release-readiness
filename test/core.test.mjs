@@ -9,6 +9,7 @@ import {
   mkdirSync,
   readFileSync,
   realpathSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -1069,6 +1070,237 @@ message SignResult {
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /OperationResponse must contain a generated result\/error outcome oneof/u);
+});
+
+test("granular provider boundary requires correlated typed turns and retired-path removal", () => {
+  const root = createFixture();
+  const context = createContext(root);
+  writeFileSync(
+    join(root, "provider.proto"),
+    `syntax = "proto3";
+enum IdentityProtocolVersion {
+  IDENTITY_PROTOCOL_VERSION_UNSPECIFIED = 0;
+  IDENTITY_PROTOCOL_VERSION_V1 = 1;
+}
+enum IdentityProviderCapability {
+  IDENTITY_PROVIDER_CAPABILITY_UNSPECIFIED = 0;
+  IDENTITY_PROVIDER_CAPABILITY_RESOLVE = 1;
+}
+enum IdentityProviderErrorReason {
+  IDENTITY_PROVIDER_ERROR_REASON_UNSPECIFIED = 0;
+  IDENTITY_PROVIDER_ERROR_REASON_REJECTED = 1;
+}
+message IdentityProviderDescriptor {
+  IdentityProtocolVersion protocol_version = 1;
+  repeated IdentityProviderCapability capabilities = 2;
+  uint32 max_response_bytes = 3;
+}
+message IdentityProviderRequest {
+  uint64 executor_id = 1;
+  uint64 sequence = 2;
+  oneof operation {
+    ResolveRequest resolve = 10;
+  }
+}
+message IdentityProviderResult {
+  oneof result {
+    ResolveResult resolve = 10;
+  }
+}
+message IdentityProviderError {
+  IdentityProviderErrorReason reason = 1;
+}
+message IdentityProviderResponse {
+  uint64 executor_id = 1;
+  uint64 sequence = 2;
+  oneof outcome {
+    IdentityProviderResult result = 3;
+    IdentityProviderError error = 4;
+  }
+}
+message ResolveRequest { string did = 1; }
+message ResolveResult { bytes document = 1; }
+`,
+  );
+  writeFileSync(
+    join(root, "codec.rs"),
+    "decode_provider_response validate_result unknown_fields\n",
+  );
+  writeFileSync(
+    join(root, "runtime.rs"),
+    "ProviderTransport response.executor_id != executor_id response.sequence != sequence\n",
+  );
+  writeFileSync(
+    join(root, "adapter.ts"),
+    "IdentityProviderRequest IdentityProviderResponse 2_097_152\n",
+  );
+
+  const policy = {
+    protoPath: "provider.proto",
+    codecPath: "codec.rs",
+    runtimePath: "runtime.rs",
+    requiredCodecNeedles: ["decode_provider_response", "validate_result", "unknown_fields"],
+    requiredRuntimeNeedles: [
+      "ProviderTransport",
+      "response.executor_id != executor_id",
+      "response.sequence != sequence",
+    ],
+    operations: [
+      {
+        fieldName: "resolve",
+        requestType: "ResolveRequest",
+        resultType: "ResolveResult",
+        number: 10,
+      },
+    ],
+    adapters: [
+      {
+        path: "adapter.ts",
+        requiredNeedles: [
+          "IdentityProviderRequest",
+          "IdentityProviderResponse",
+          "2_097_152",
+        ],
+        forbiddenNeedles: ["WholeOperationProvider"],
+      },
+    ],
+    retiredPaths: ["deprecated-provider"],
+  };
+  context.assertGranularProviderBoundary(policy);
+
+  mkdirSync(join(root, "deprecated-provider"));
+  writeFileSync(join(root, "deprecated-provider", "tracker.yaml"), "strict: false\n");
+  const retiredResult = runFixtureScript(
+    root,
+    `context.assertPathsAbsent(["deprecated-provider"]);`,
+  );
+  assert.equal(retiredResult.status, 1);
+  assert.match(retiredResult.stderr, /deprecated-provider must not exist/u);
+  rmSync(join(root, "deprecated-provider"), { recursive: true });
+
+  symlinkSync("missing-retired-target", join(root, "deprecated-provider"));
+  const brokenSymlinkResult = runFixtureScript(
+    root,
+    `context.assertPathsAbsent(["deprecated-provider"]);`,
+  );
+  assert.equal(brokenSymlinkResult.status, 1);
+  assert.match(brokenSymlinkResult.stderr, /deprecated-provider must not exist/u);
+  rmSync(join(root, "deprecated-provider"));
+
+  const validProviderProto = readFileSync(join(root, "provider.proto"), "utf8");
+  writeFileSync(
+    join(root, "provider.proto"),
+    validProviderProto.replace(
+      "    ResolveRequest resolve = 10;",
+      "    ResolveRequest resolve = 10;\n    ResolveRequest wallet = 11;",
+    ),
+  );
+  const contaminatedOperationResult = runFixtureScript(
+    root,
+    `context.assertGranularProviderBoundary(${JSON.stringify(policy)});`,
+  );
+  assert.equal(contaminatedOperationResult.status, 1);
+  assert.match(
+    contaminatedOperationResult.stderr,
+    /IdentityProviderRequest must define correlated granular operations/u,
+  );
+
+  writeFileSync(
+    join(root, "provider.proto"),
+    validProviderProto.replace(
+      "  uint32 max_response_bytes = 3;",
+      "  uint32 max_response_bytes = 3;\n  string provider_endpoint = 4;",
+    ),
+  );
+  const descriptorExpansionResult = runFixtureScript(
+    root,
+    `context.assertGranularProviderBoundary(${JSON.stringify(policy)});`,
+  );
+  assert.equal(descriptorExpansionResult.status, 1);
+  assert.match(
+    descriptorExpansionResult.stderr,
+    /must define version, capabilities, and response bound/u,
+  );
+
+  writeFileSync(
+    join(root, "provider.proto"),
+    validProviderProto.replace(
+      "  uint32 max_response_bytes = 3;",
+      "  uint32 max_response_bytes = 3;\n  map<string, string> provider_metadata = 4;",
+    ),
+  );
+  const descriptorMapExpansionResult = runFixtureScript(
+    root,
+    `context.assertGranularProviderBoundary(${JSON.stringify(policy)});`,
+  );
+  assert.equal(descriptorMapExpansionResult.status, 1);
+  assert.match(
+    descriptorMapExpansionResult.stderr,
+    /must define version, capabilities, and response bound/u,
+  );
+
+  writeFileSync(
+    join(root, "provider.proto"),
+    validProviderProto.replace(
+      "  IdentityProtocolVersion protocol_version = 1;",
+      "  bytes protocol_version = 1;",
+    ),
+  );
+  const descriptorTypeResult = runFixtureScript(
+    root,
+    `context.assertGranularProviderBoundary(${JSON.stringify(policy)});`,
+  );
+  assert.equal(descriptorTypeResult.status, 1);
+  assert.match(
+    descriptorTypeResult.stderr,
+    /must define version, capabilities, and response bound/u,
+  );
+
+  writeFileSync(
+    join(root, "provider.proto"),
+    validProviderProto.replace(
+      "    IdentityProviderError error = 4;",
+      "    IdentityProviderError error = 4;\n    bytes untyped = 5;",
+    ),
+  );
+  const outcomeExpansionResult = runFixtureScript(
+    root,
+    `context.assertGranularProviderBoundary(${JSON.stringify(policy)});`,
+  );
+  assert.equal(outcomeExpansionResult.status, 1);
+  assert.match(
+    outcomeExpansionResult.stderr,
+    /IdentityProviderResponse must echo correlation/u,
+  );
+
+  const duplicateOperationPolicy = {
+    ...policy,
+    operations: [...policy.operations, { ...policy.operations[0] }],
+  };
+  const duplicateOperationResult = runFixtureScript(
+    root,
+    `context.assertGranularProviderBoundary(${JSON.stringify(duplicateOperationPolicy)});`,
+  );
+  assert.equal(duplicateOperationResult.status, 1);
+  assert.match(duplicateOperationResult.stderr, /operation field resolve is duplicated/u);
+
+  writeFileSync(
+    join(root, "provider.proto"),
+    validProviderProto.replace(
+      "  uint64 sequence = 2;\n  oneof outcome",
+      "  oneof outcome",
+    ),
+  );
+  policy.retiredPaths = [];
+  const correlationResult = runFixtureScript(
+    root,
+    `context.assertGranularProviderBoundary(${JSON.stringify(policy)});`,
+  );
+  assert.equal(correlationResult.status, 1);
+  assert.match(
+    correlationResult.stderr,
+    /IdentityProviderResponse must echo correlation/u,
+  );
 });
 
 test("ReallyMe protobuf release policy defaults to current pinned generator versions", () => {
