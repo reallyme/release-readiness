@@ -27,6 +27,9 @@ if (packageJson.name !== "@reallyme/release-readiness") {
 if (packageJson.license !== "Apache-2.0") {
   fail("package license must remain Apache-2.0");
 }
+if (packageJson.version !== "0.4.0") {
+  fail("package version must remain 0.4.0 for this release");
+}
 for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]) {
   if (packageJson[field] !== undefined && Object.keys(packageJson[field]).length !== 0) {
     fail(`package ${field} must remain empty`);
@@ -40,9 +43,15 @@ assertContains("scripts/run-consumer-check.mjs", "shared core does not match the
 assertContains("scripts/run-consumer-check.mjs", "MAX_SHARED_CORE_BYTES");
 assertContains("README.md", "github:reallyme/release-readiness#FULL_COMMIT_SHA");
 assertNotContains("README.md", "release-readiness#main");
+assertContains("README.md", "Latest stable registry requirements");
 assertContains("core.mjs", "assertGeneratedArtifactsFresh");
 assertContains("core.mjs", "assertGeneratedProtoHardeningPolicy");
 assertContains("core.mjs", "assertReallyMeProtobufReleasePolicy");
+assertContains("core.mjs", 'bufVersion = "1.72.0"');
+assertContains("core.mjs", 'buffaVersion = "0.9.1"');
+assertContains("core.mjs", "DEFAULT_REALLYME_LATEST_STABLE_DEPENDENCIES");
+assertContains("core.mjs", "reallyMeLatestStableDependencies");
+assertContains("core.mjs", "loadLatestCargoRegistryVersion");
 assertContains("core.mjs", "assertReallyMeVendoredCorePolicy");
 assertContains("core.mjs", "assertReallyMeRustProtoRepositoryPolicy");
 assertContains("core.mjs", "assertCargoMetadataPolicy");
@@ -110,6 +119,10 @@ assertContains(
 );
 assertContains(
   "templates/check_release_readiness.mjs",
+  "reallyMeLatestStableDependencies: true",
+);
+assertContains(
+  "templates/check_release_readiness.mjs",
   'requiredInstallSteps: [',
 );
 assertContains(
@@ -127,12 +140,12 @@ assertNodeWorkflowJobsPinNode({ nodeVersion: "24" });
 assertWorkflowUsesStep(
   ".github/workflows/checks.yml",
   "Checkout",
-  "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5",
+  "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
 );
 assertWorkflowUsesStep(
   ".github/workflows/checks.yml",
   "Setup Node",
-  "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+  "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
 );
 assertWorkflowRunStep(
   ".github/workflows/checks.yml",

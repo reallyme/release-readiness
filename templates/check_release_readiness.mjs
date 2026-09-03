@@ -45,6 +45,9 @@ const repositoryPolicy = {
     requirePublishInclude: true,
     validatePublishablePathDependencies: true,
   },
+  cargoMetadata: {
+    reallyMeLatestStableDependencies: true,
+  },
   spdx: {
     excludedPrefixes: [
       "target",
