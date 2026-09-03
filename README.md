@@ -22,6 +22,8 @@ runner so policy fixes do not remain trapped in stale local copies.
 - Workflow permissions matched structurally at the workflow and job scopes, and
   release-critical named steps matched as complete commands rather than loose
   substrings.
+- Latest stable registry requirements for ReallyMe Crypto, Codec, JOSE, and
+  COSE dependencies when they appear in Cargo metadata.
 - Cargo workspace metadata, package surfaces, dependency sources, and publish
   policy.
 - SPDX headers for tracked source files.

@@ -167,6 +167,115 @@ test("cargo metadata policy validates publish and dependency boundaries", () => 
   assert.equal(packages.get("reallyme-example").version, "1.2.3");
 });
 
+test("cargo metadata policy enforces latest stable ReallyMe registry dependencies", () => {
+  const root = createFixture();
+  const context = createContext(root);
+  const metadata = {
+    packages: [
+      {
+        name: "reallyme-example",
+        version: "1.2.3",
+        publish: null,
+        dependencies: [
+          {
+            name: "reallyme-crypto",
+            req: "^0.3.5",
+            source: "registry+https://github.com/rust-lang/crates.io-index",
+            uses_default_features: false,
+            optional: false,
+            features: [],
+          },
+          {
+            name: "reallyme-codec",
+            req: "^0.2.2",
+            source: "registry+https://github.com/rust-lang/crates.io-index",
+            uses_default_features: false,
+            optional: false,
+            features: [],
+          },
+        ],
+      },
+    ],
+  };
+
+  context.assertCargoMetadataDocument(metadata, {
+    latestStableVersions: {
+      "reallyme-crypto": "0.3.5",
+      "reallyme-codec": "0.2.2",
+    },
+    reallyMeLatestStableDependencies: true,
+  });
+
+  metadata.packages[0].dependencies[0].req = "^0.3.4";
+  const result = runFixtureScript(
+    root,
+    `context.assertCargoMetadataDocument(
+  ${JSON.stringify(metadata)},
+  {
+    latestStableVersions: {
+      "reallyme-crypto": "0.3.5",
+      "reallyme-codec": "0.2.2",
+    },
+    reallyMeLatestStableDependencies: true,
+  },
+);`,
+  );
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stderr,
+    /reallyme-example dependency reallyme-crypto requirement is \^0\.3\.4, expected latest stable \^0\.3\.5/u,
+  );
+});
+
+test("cargo metadata dependency policies can require latest stable directly", () => {
+  const root = createFixture();
+  const context = createContext(root);
+  context.assertCargoMetadataDocument(
+    {
+      packages: [
+        {
+          name: "reallyme-example",
+          version: "1.2.3",
+          publish: null,
+          dependencies: [
+            {
+              name: "reallyme-cose",
+              req: "^0.2.2",
+              source: "registry+https://github.com/rust-lang/crates.io-index",
+              uses_default_features: false,
+              optional: false,
+              features: [],
+            },
+            {
+              name: "reallyme-jose",
+              req: "0.3.1",
+              source: "registry+https://github.com/rust-lang/crates.io-index",
+              uses_default_features: false,
+              optional: false,
+              features: [],
+            },
+          ],
+        },
+      ],
+    },
+    {
+      latestStableVersions: {
+        "reallyme-cose": "0.2.2",
+        "reallyme-jose": "0.3.1",
+      },
+      packages: [
+        {
+          name: "reallyme-example",
+          dependencies: [
+            { name: "reallyme-cose", latestStable: true },
+            { name: "reallyme-jose", latestStable: "exact" },
+          ],
+        },
+      ],
+    },
+  );
+});
+
 test("repository reads fail closed on paths outside the repository", () => {
   const root = createFixture();
   const result = runFixtureScript(root, 'context.readText("../outside.txt");');
@@ -960,6 +1069,91 @@ message SignResult {
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /OperationResponse must contain a generated result\/error outcome oneof/u);
+});
+
+test("ReallyMe protobuf release policy defaults to current pinned generator versions", () => {
+  const root = createFixture();
+  const context = createContext(root);
+  mkdirSync(join(root, "generated"), { recursive: true });
+  mkdirSync(join(root, "scripts", "release-readiness"), { recursive: true });
+  writeFileSync(join(root, "scripts", "release-readiness", "core.mjs"), "core\n");
+  writeFileSync(join(root, "harden.mjs"), 'const option = "--check-idempotent";\nredact\n');
+  writeFileSync(
+    join(root, "schema.proto"),
+    `syntax = "proto3";
+message SensitiveBytes {
+  bytes value = 1;
+}
+`,
+  );
+  writeFileSync(
+    join(root, "generated.rs"),
+    `pub struct SensitiveBytes {
+    pub value: ::buffa::alloc::vec::Vec<u8>,
+}
+impl ::core::fmt::Debug for SensitiveBytes {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("SensitiveBytes").field("value", &"<redacted>").finish()
+    }
+}
+impl ::core::ops::Drop for SensitiveBytes {
+    fn drop(&mut self) {
+        ::zeroize::Zeroize::zeroize(&mut self.value);
+    }
+}
+struct Wire {
+    value: ::zeroize::Zeroizing<::buffa::alloc::vec::Vec<u8>>,
+}
+`,
+  );
+  writeFileSync(
+    join(root, ".github", "workflows", "protobuf-ci.yml"),
+    `name: Protobuf
+env:
+  BUF_VERSION: 1.72.0
+  BUFFA_VERSION: 0.9.1
+jobs:
+  check:
+    steps:
+      - name: Install pinned Buffa generators
+        run: |
+          cargo install protoc-gen-buffa --version "$BUFFA_VERSION" --locked
+          cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked
+      - name: Lint protobuf schema
+        run: buf lint
+      - name: Regenerate protobuf artifacts
+        run: buf generate
+      - name: Check release readiness generated freshness
+        run: node scripts/check_release_readiness.mjs --generated-freshness
+      - name: Mention vendored core
+        run: test -f scripts/release-readiness/core.mjs
+`,
+  );
+
+  context.assertReallyMeProtobufReleasePolicy({
+    generatedFreshness: {
+      generatedPaths: ["generated"],
+      commands: [["node", ["--version"]]],
+    },
+    hardeningPolicy: {
+      hardeningScript: "harden.mjs",
+      protoSchema: "schema.proto",
+      generatedRust: "generated.rs",
+      requiredScriptNeedles: ["redact"],
+      scalarFieldClassifications: [
+        {
+          message: "SensitiveBytes",
+          field: "value",
+          kind: "bytes",
+          sensitivity: "sensitive",
+        },
+      ],
+      requiredGeneratedNeedles: ["pub struct SensitiveBytes"],
+      forbiddenGeneratedNeedles: ["::buffa::alloc::format!("],
+      requireStrictJson: false,
+      requireUnknownFieldZeroization: false,
+    },
+  });
 });
 
 test("aggregate Rust protobuf policy rejects duplicate freshness configuration", () => {
