@@ -36,7 +36,7 @@ for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]
   }
 }
 
-assertContains("core.mjs", "RELEASE_READINESS_CORE_CONTRACT_VERSION = 9");
+assertContains("core.mjs", "RELEASE_READINESS_CORE_CONTRACT_VERSION = 10");
 assertContains("package.json", '"reallyme-release-readiness": "scripts/run-consumer-check.mjs"');
 assertContains("scripts/run-consumer-check.mjs", "timingSafeEqual");
 assertContains("scripts/run-consumer-check.mjs", "shared core does not match the pinned package");
@@ -48,7 +48,7 @@ assertContains("core.mjs", "assertGeneratedArtifactsFresh");
 assertContains("core.mjs", "assertGeneratedProtoHardeningPolicy");
 assertContains("core.mjs", "assertReallyMeProtobufReleasePolicy");
 assertContains("core.mjs", 'bufVersion = "1.72.0"');
-assertContains("core.mjs", 'buffaVersion = "0.9.1"');
+assertContains("core.mjs", 'buffaVersion = "0.9.2"');
 assertContains("core.mjs", "DEFAULT_REALLYME_LATEST_STABLE_DEPENDENCIES");
 assertContains("core.mjs", "reallyMeLatestStableDependencies");
 assertContains("core.mjs", "loadLatestCargoRegistryVersion");
@@ -99,7 +99,7 @@ assertContains("README.md", "retired-path enforcement");
 assertContains("README.md", "buf generate");
 assertContains("README.md", "harden-generated-example-proto.mjs");
 assertContains("README.md", "actions/workflows/checks.yml/badge.svg");
-assertContains("README.md", "RELEASE_READINESS_CORE_CONTRACT_VERSION = 9");
+assertContains("README.md", "RELEASE_READINESS_CORE_CONTRACT_VERSION = 10");
 assertContains("core.mjs", "scalarFieldClassifications");
 assertContains("core.mjs", "unclassified protobuf scalar field");
 assertContains("templates/check_release_readiness.mjs", "scalarFieldClassifications");

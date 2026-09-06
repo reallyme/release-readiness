@@ -11,7 +11,7 @@ import { spawnSync } from "node:child_process";
 // This module is intentionally written as a standalone, vendorable release
 // readiness core. Sister repositories should copy it byte-for-byte or consume a
 // pinned upstream revision so release-critical checks do not drift silently.
-export const RELEASE_READINESS_CORE_CONTRACT_VERSION = 9;
+export const RELEASE_READINESS_CORE_CONTRACT_VERSION = 10;
 
 const DEFAULT_FAILURE_PREFIX = "release readiness check failed";
 const DEFAULT_REALLYME_LATEST_STABLE_DEPENDENCIES = [
@@ -1521,7 +1521,7 @@ export function createReleaseReadinessContext(options) {
       workflow = ".github/workflows/protobuf-ci.yml",
       corePath = "scripts/release-readiness/core.mjs",
       bufVersion = "1.72.0",
-      buffaVersion = "0.9.1",
+      buffaVersion = "0.9.2",
       installBufStepName = "Install buf",
       installBufUses = null,
       installBufRun = null,

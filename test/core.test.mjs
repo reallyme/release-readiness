@@ -1343,7 +1343,7 @@ struct Wire {
     `name: Protobuf
 env:
   BUF_VERSION: 1.72.0
-  BUFFA_VERSION: 0.9.1
+  BUFFA_VERSION: 0.9.2
 jobs:
   check:
     steps:
@@ -1707,7 +1707,7 @@ test("vendored core policy rejects assertions hidden in strings", () => {
   const root = createTrackedFixture();
   writeFileSync(
     join(root, "scripts", "release-readiness", "core.mjs"),
-    `export const RELEASE_READINESS_CORE_CONTRACT_VERSION = 9;
+    `export const RELEASE_READINESS_CORE_CONTRACT_VERSION = 10;
 const assertReallyMeVendoredCorePolicy = () => {
   "assertGeneratedArtifactsFresh";
   "assertGeneratedProtoHardeningPolicy";
