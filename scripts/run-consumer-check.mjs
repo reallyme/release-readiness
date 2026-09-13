@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
+// SPDX-FileCopyrightText: 2026 ReallyMe LLC
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
@@ -9,10 +9,11 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
+import { RELEASE_READINESS_VERSION } from "../core.mjs";
+
 const MAX_CHECKER_BYTES = 524_288;
 const MAX_SHARED_CORE_BYTES = 262_144;
 const MAX_TRACKED_FILES_BYTES = 16_777_216;
-const CONTRACT_VERSION = 12;
 
 const failure = (message) => {
   console.error(`release readiness runner failed: ${message}`);
@@ -95,7 +96,7 @@ const result = spawnSync(process.execPath, [checkerPath, ...process.argv.slice(2
   cwd: repositoryRoot,
   env: {
     ...process.env,
-    RELEASE_READINESS_ENFORCED_CONTRACT: String(CONTRACT_VERSION),
+    RELEASE_READINESS_ENFORCED_VERSION: RELEASE_READINESS_VERSION,
     RELEASE_READINESS_SOURCE_POLICY_FD: "3",
   },
   stdio: ["inherit", "inherit", "inherit", "pipe"],

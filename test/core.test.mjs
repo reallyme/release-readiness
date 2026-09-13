@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
+// SPDX-FileCopyrightText: 2026 ReallyMe LLC
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
@@ -74,6 +74,7 @@ const createTrackedFixture = () => {
 const createProtocolShapeFixture = () => {
   const root = createFixture();
   for (const directory of [
+    "conformance",
     "contracts",
     "crates/openid4vci",
     "crates/proto",
@@ -88,6 +89,7 @@ const createProtocolShapeFixture = () => {
     join(root, "scripts", "release-readiness", "core.mjs"),
   );
   writeFileSync(join(root, "Cargo.toml"), "[workspace]\nmembers = []\n");
+  writeFileSync(join(root, "conformance", "README.md"), "conformance\n");
   writeFileSync(join(root, "contracts", "api.md"), "contract\n");
   writeFileSync(join(root, "crates", "openid4vci", "Cargo.toml"), "[package]\nname = \"openid4vci\"\n");
   writeFileSync(join(root, "crates", "proto", "Cargo.toml"), "[package]\nname = \"proto\"\n");
@@ -107,7 +109,7 @@ const createProtocolShapeFixture = () => {
 
 const protocolShapePolicy = {
   archetype: "protocol-engine",
-  requiredLanes: ["crates", "contracts", "docs", "scripts", ".github"],
+  requiredLanes: ["crates", "contracts", "conformance", "docs", "scripts", ".github"],
   optionalLanes: [],
   exceptions: [],
   crates: [
@@ -116,6 +118,181 @@ const protocolShapePolicy = {
     { path: "crates/proto-codec", role: "proto-codec" },
   ],
   subLanes: {},
+  forbiddenPaths: [],
+  requireReleaseReadiness: true,
+};
+
+const createApplicationShapeFixture = () => {
+  const root = createFixture();
+  for (const directory of [
+    "conformance",
+    "contracts",
+    "crates/identity",
+    "crates/proto/proto",
+    "docs",
+    "scripts/release-readiness",
+  ]) {
+    mkdirSync(join(root, directory), { recursive: true });
+  }
+  copyFileSync(
+    new URL("../core.mjs", import.meta.url),
+    join(root, "scripts", "release-readiness", "core.mjs"),
+  );
+  writeFileSync(join(root, "Cargo.toml"), "[workspace]\nmembers = []\n");
+  writeFileSync(join(root, "conformance", "README.md"), "conformance\n");
+  writeFileSync(join(root, "contracts", "public-api.md"), "contract\n");
+  writeFileSync(join(root, "crates", "identity", "Cargo.toml"), '[package]\nname = "identity"\n');
+  writeFileSync(join(root, "crates", "proto", "Cargo.toml"), '[package]\nname = "proto"\n');
+  writeFileSync(
+    join(root, "crates", "proto", "proto", "identity.proto"),
+    'syntax = "proto3";\n',
+  );
+  writeFileSync(join(root, "docs", "architecture.md"), "architecture\n");
+  writeFileSync(join(root, "scripts", "check_release_readiness.mjs"), "export {};\n");
+  const gitInit = spawnSync("git", ["init", "--quiet"], { cwd: root, encoding: "utf8" });
+  assert.equal(gitInit.status, 0, gitInit.stderr);
+  const gitAdd = spawnSync("git", ["add", "."], { cwd: root, encoding: "utf8" });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  return root;
+};
+
+const applicationShapePolicy = {
+  archetype: "application",
+  requiredLanes: ["crates", "contracts", "conformance", "docs", "scripts", ".github"],
+  optionalLanes: [],
+  exceptions: [],
+  crates: [
+    { path: "crates/identity", role: "domain" },
+    { path: "crates/proto", role: "proto" },
+  ],
+  subLanes: {},
+  forbiddenPaths: [],
+  requireReleaseReadiness: true,
+};
+
+const createApplicationCollectionShapeFixture = () => {
+  const root = createFixture();
+  for (const directory of [
+    "apps/catalog/contracts/proto",
+    "apps/messaging",
+    "conformance",
+    "docs",
+    "scripts/release-readiness",
+  ]) {
+    mkdirSync(join(root, directory), { recursive: true });
+  }
+  copyFileSync(
+    new URL("../core.mjs", import.meta.url),
+    join(root, "scripts", "release-readiness", "core.mjs"),
+  );
+  writeFileSync(join(root, "Cargo.toml"), "[workspace]\nmembers = []\n");
+  writeFileSync(join(root, "apps", "catalog", "README.md"), "catalog application\n");
+  writeFileSync(
+    join(root, "apps", "catalog", "contracts", "proto", "catalog.proto"),
+    'syntax = "proto3";\n',
+  );
+  writeFileSync(join(root, "apps", "messaging", "README.md"), "messaging application\n");
+  writeFileSync(join(root, "conformance", "README.md"), "conformance\n");
+  writeFileSync(join(root, "docs", "architecture.md"), "architecture\n");
+  writeFileSync(join(root, "scripts", "check_release_readiness.mjs"), "export {};\n");
+  const gitInit = spawnSync("git", ["init", "--quiet"], { cwd: root, encoding: "utf8" });
+  assert.equal(gitInit.status, 0, gitInit.stderr);
+  const gitAdd = spawnSync("git", ["add", "."], { cwd: root, encoding: "utf8" });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  return root;
+};
+
+const applicationCollectionShapePolicy = {
+  archetype: "application-collection",
+  requiredLanes: ["apps", "conformance", "docs", "scripts", ".github"],
+  optionalLanes: [],
+  exceptions: [],
+  crates: [],
+  subLanes: { apps: ["catalog", "messaging"] },
+  forbiddenPaths: [],
+  requireReleaseReadiness: true,
+};
+
+const createDirectoryShapeFixture = ({ directories, files = [] }) => {
+  const root = createFixture();
+  for (const directory of directories) {
+    mkdirSync(join(root, directory), { recursive: true });
+    writeFileSync(join(root, directory, "README.md"), `${directory}\n`);
+  }
+  mkdirSync(join(root, "scripts", "release-readiness"), { recursive: true });
+  copyFileSync(
+    new URL("../core.mjs", import.meta.url),
+    join(root, "scripts", "release-readiness", "core.mjs"),
+  );
+  writeFileSync(join(root, "scripts", "check_release_readiness.mjs"), "export {};\n");
+  for (const [path, contents] of files) {
+    mkdirSync(join(root, path, ".."), { recursive: true });
+    writeFileSync(join(root, path), contents);
+  }
+  const gitInit = spawnSync("git", ["init", "--quiet"], { cwd: root, encoding: "utf8" });
+  assert.equal(gitInit.status, 0, gitInit.stderr);
+  const gitAdd = spawnSync("git", ["add", "."], { cwd: root, encoding: "utf8" });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  return root;
+};
+
+const taxonomyShapePolicy = {
+  archetype: "taxonomy",
+  requiredLanes: [
+    "taxonomy",
+    "schema",
+    "views",
+    "consumers",
+    "conformance",
+    "tests",
+    "docs",
+    "scripts",
+    ".github",
+  ],
+  optionalLanes: [],
+  exceptions: [],
+  crates: [],
+  subLanes: { views: ["identity", "ssi"] },
+  forbiddenPaths: [],
+  requireReleaseReadiness: true,
+};
+
+const conformanceSuiteShapePolicy = {
+  archetype: "conformance-suite",
+  requiredLanes: [
+    "upstream",
+    "plans",
+    "adapters",
+    "schemas",
+    "tests",
+    "results",
+    "evidence",
+    "docs",
+    "scripts",
+    ".github",
+  ],
+  optionalLanes: [],
+  exceptions: [],
+  crates: [],
+  subLanes: {},
+  forbiddenPaths: [],
+  requireReleaseReadiness: true,
+};
+
+const documentationSiteShapePolicy = {
+  archetype: "documentation-site",
+  requiredLanes: ["content", "contracts", "tests", "scripts", ".github"],
+  optionalLanes: [
+    "assets",
+    "components",
+    "conformance",
+    "examples",
+    "localization",
+    "snippets",
+  ],
+  exceptions: [],
+  crates: [],
+  subLanes: { content: ["guides", "reference"] },
   forbiddenPaths: [],
   requireReleaseReadiness: true,
 };
@@ -1067,18 +1244,25 @@ test("SPDX policy defaults to ReallyMe's dual-license header", () => {
   const root = createTrackedFixture();
   writeFileSync(
     join(root, "reallyme.rs"),
-    `// SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
+    `// SPDX-FileCopyrightText: 2026 ReallyMe LLC
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 pub fn create() {}
 `,
   );
+  writeFileSync(join(root, "README.md"), "# Header-free documentation\n");
+  writeFileSync(join(root, "NOTICE.txt"), "Header-free plain text\n");
   const gitAdd = spawnSync("git", ["add", "reallyme.rs"], {
     cwd: root,
     encoding: "utf8",
   });
   assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const gitAddDocumentation = spawnSync("git", ["add", "README.md", "NOTICE.txt"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAddDocumentation.status, 0, gitAddDocumentation.stderr);
   const result = runTrackedFixtureScript(
     root,
     `context.assertSpdxHeaders({
@@ -1095,7 +1279,7 @@ test("SPDX policy supports a different copyright owner and license", () => {
   const root = createTrackedFixture();
   writeFileSync(
     join(root, "example-organization.rs"),
-    `// SPDX-FileCopyrightText: Copyright © 2026 Example Organization. All rights reserved
+    `// SPDX-FileCopyrightText: 2026 Example Organization
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
@@ -1116,7 +1300,7 @@ pub fn owned_by_example_organization() {}
   ],
   requireExclusionsMatched: true,
   requireExclusionReasons: true,
-  copyright: "SPDX-FileCopyrightText: Copyright © 2026 Example Organization. All rights reserved",
+  copyright: "SPDX-FileCopyrightText: 2026 Example Organization",
   license: "SPDX-License-Identifier: AGPL-3.0-only",
 });`,
   );
@@ -1183,6 +1367,165 @@ test("repository shape policy accepts a declared protocol-engine layout", () => 
   context.assertRepositoryShapePolicy(protocolShapePolicy);
 });
 
+test("repository shape policy accepts a declared application layout", () => {
+  const root = createApplicationShapeFixture();
+  const context = createContext(root);
+
+  context.assertRepositoryShapePolicy(applicationShapePolicy);
+});
+
+test("repository shape policy accepts a declared application-collection layout", () => {
+  const root = createApplicationCollectionShapeFixture();
+  const context = createContext(root);
+
+  context.assertRepositoryShapePolicy(applicationCollectionShapePolicy);
+});
+
+test("repository shape policy accepts a canonical taxonomy layout", () => {
+  const root = createDirectoryShapeFixture({
+    directories: [
+      "conformance",
+      "consumers",
+      "docs",
+      "schema",
+      "taxonomy",
+      "tests",
+      "views/identity",
+      "views/ssi",
+    ],
+  });
+  const context = createContext(root);
+
+  context.assertRepositoryShapePolicy(taxonomyShapePolicy);
+});
+
+test("repository shape policy accepts an auditable conformance-suite layout", () => {
+  const root = createDirectoryShapeFixture({
+    directories: [
+      "adapters",
+      "docs",
+      "evidence",
+      "plans",
+      "results",
+      "schemas",
+      "tests",
+      "upstream",
+    ],
+  });
+  const context = createContext(root);
+
+  context.assertRepositoryShapePolicy(conformanceSuiteShapePolicy);
+});
+
+test("repository shape policy accepts a documentation-site layout", () => {
+  const root = createDirectoryShapeFixture({
+    directories: [
+      "assets",
+      "components",
+      "conformance",
+      "content/guides",
+      "content/reference",
+      "contracts",
+      "examples",
+      "localization",
+      "snippets",
+      "tests",
+    ],
+  });
+  const context = createContext(root);
+
+  context.assertRepositoryShapePolicy(documentationSiteShapePolicy);
+});
+
+test("documentation-site requires every content section to be declared", () => {
+  const root = createDirectoryShapeFixture({
+    directories: [
+      "assets",
+      "components",
+      "conformance",
+      "content/guides",
+      "content/reference",
+      "content/undeclared",
+      "contracts",
+      "examples",
+      "localization",
+      "snippets",
+      "tests",
+    ],
+  });
+  const result = runFixtureScript(
+    root,
+    `context.assertRepositoryShapePolicy(${JSON.stringify(documentationSiteShapePolicy)});`,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /undeclared content sublane undeclared/u);
+});
+
+test("hosted-service requires every service to be declared", () => {
+  const root = createDirectoryShapeFixture({
+    directories: [
+      "conformance",
+      "deploy",
+      "docs",
+      "operations",
+      "services/api",
+      "services/worker",
+    ],
+  });
+  const acceptedPolicy = {
+    archetype: "hosted-service",
+    requiredLanes: [
+      "services",
+      "deploy",
+      "operations",
+      "conformance",
+      "docs",
+      "scripts",
+      ".github",
+    ],
+    optionalLanes: [],
+    exceptions: [],
+    crates: [],
+    subLanes: { services: ["api", "worker"] },
+    forbiddenPaths: [],
+    requireReleaseReadiness: true,
+  };
+  const context = createContext(root);
+  context.assertRepositoryShapePolicy(acceptedPolicy);
+
+  const policy = {
+    ...acceptedPolicy,
+    subLanes: { services: ["api"] },
+  };
+  const result = runFixtureScript(
+    root,
+    `context.assertRepositoryShapePolicy(${JSON.stringify(policy)});`,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /undeclared services sublane worker/u);
+});
+
+test("application-collection keeps protobuf schemas inside application-owned contracts", () => {
+  const root = createApplicationCollectionShapeFixture();
+  const misplacedPath = "apps/catalog/proto/catalog.proto";
+  mkdirSync(join(root, misplacedPath, ".."), { recursive: true });
+  writeFileSync(join(root, misplacedPath), 'syntax = "proto3";\n');
+  const gitAdd = spawnSync("git", ["add", misplacedPath], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const result = runFixtureScript(
+    root,
+    `context.assertRepositoryShapePolicy(${JSON.stringify(applicationCollectionShapePolicy)});`,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /requires protobuf schemas in apps\/<app>\/contracts\/proto/u);
+});
+
 test("repository shape policy accepts a declared platform-workspace layout", () => {
   const root = createPlatformWorkspaceShapeFixture();
   const context = createContext(root);
@@ -1212,6 +1555,7 @@ test("platform-workspace keeps protobuf schemas inside app-owned contracts", () 
 test("repository shape policy rejects forbidden and undeclared root lanes", () => {
   for (const [path, expected] of [
     ["proto/schema.proto", /forbids root lane proto/u],
+    ["tests/protocol.test.mjs", /forbids root lane tests/u],
     ["misc/notes.md", /undeclared root lane misc/u],
   ]) {
     const root = createProtocolShapeFixture();
@@ -1250,6 +1594,35 @@ test("repository shape policy requires proto-codec to accompany canonical proto"
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /proto-codec requires a canonical proto crate/u);
+});
+
+test("repository shape policy rejects compatibility proto packages regardless of role", () => {
+  const root = createProtocolShapeFixture();
+  const compatibilityPath = "crates/proto-credential";
+  mkdirSync(join(root, compatibilityPath), { recursive: true });
+  writeFileSync(
+    join(root, compatibilityPath, "Cargo.toml"),
+    '[package]\nname = "proto-credential"\n',
+  );
+  const gitAdd = spawnSync("git", ["add", compatibilityPath], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const policy = {
+    ...protocolShapePolicy,
+    crates: [
+      ...protocolShapePolicy.crates,
+      { path: compatibilityPath, role: "support" },
+    ],
+  };
+  const result = runFixtureScript(
+    root,
+    `context.assertRepositoryShapePolicy(${JSON.stringify(policy)});`,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /forbids compatibility proto package crates\/proto-credential/u);
 });
 
 test("repository shape policy rejects schemas and nested crates outside the canonical boundary", () => {
@@ -1496,13 +1869,9 @@ test("repository shape policy keeps reusable vectors out of conformance fixtures
     encoding: "utf8",
   });
   assert.equal(gitAdd.status, 0, gitAdd.stderr);
-  const policy = {
-    ...protocolShapePolicy,
-    optionalLanes: ["conformance"],
-  };
   const result = runFixtureScript(
     root,
-    `context.assertRepositoryShapePolicy(${JSON.stringify(policy)});`,
+    `context.assertRepositoryShapePolicy(${JSON.stringify(protocolShapePolicy)});`,
   );
 
   assert.equal(result.status, 1);
@@ -2939,6 +3308,7 @@ test("local checker template is syntactically valid and fails closed by construc
   assert.match(template, /assertReallyMeRustProtoRepositoryPolicy/u);
   assert.match(template, /assertNoTemplateMarkers\(repositoryPolicy\)/u);
   assert.match(template, /validatePublishablePathDependencies: true/u);
+  assert.match(template, /version: "0\.6\.0"/u);
   assert.match(template, /version: "0\.13\.2"/u);
   assert.match(template, /REPLACE_SECRET_BYTE_FIELD/u);
   assert.doesNotMatch(template, /requireTrackedFiles: false/u);
@@ -3220,7 +3590,7 @@ test("vendored core policy rejects assertions hidden in strings", () => {
   const root = createTrackedFixture();
   writeFileSync(
     join(root, "scripts", "release-readiness", "core.mjs"),
-    `export const RELEASE_READINESS_CORE_CONTRACT_VERSION = 12;
+    `export const RELEASE_READINESS_VERSION = "0.6.0";
 const assertReallyMeVendoredCorePolicy = () => {
   "assertGeneratedArtifactsFresh";
   "assertGeneratedProtoHardeningPolicy";
@@ -3262,6 +3632,17 @@ export { assertReallyMeVendoredCorePolicy };
     result.stderr,
     /scripts\/release-readiness\/core\.mjs must define assertGeneratedArtifactsFresh/u,
   );
+});
+
+test("vendored core policy rejects the retired numeric contract option", () => {
+  const root = createTrackedFixture();
+  const result = runTrackedFixtureScript(
+    root,
+    `context.assertReallyMeVendoredCorePolicy({ contractVersion: 12 });`,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /numeric release-readiness contractVersion is not supported/u);
 });
 
 test("vendored core policy accepts the complete current core", () => {

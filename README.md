@@ -1,14 +1,13 @@
-<!--
-SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
-
-SPDX-License-Identifier: MIT OR Apache-2.0
--->
+<div align="center">
 
 # ReallyMe Release Readiness
 
-[![Release Readiness](https://github.com/reallyme/release-readiness/actions/workflows/checks.yml/badge.svg)](https://github.com/reallyme/release-readiness/actions/workflows/checks.yml)
+**Shared release-readiness guardrails for ReallyMe repositories**
 
-Shared release-readiness guardrails for ReallyMe repositories.
+[![Release Readiness](https://github.com/reallyme/release-readiness/actions/workflows/checks.yml/badge.svg)](https://github.com/reallyme/release-readiness/actions/workflows/checks.yml)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](LICENSE-MIT)
+
+</div>
 
 This package contains a small, dependency-free Node.js core used by ReallyMe
 release scripts. Sister repositories can vendor the core byte-for-byte for
@@ -38,7 +37,11 @@ runner so policy fixes do not remain trapped in stale local copies.
   lanes and sublanes, explicit Cargo crate roles, canonical proto ownership,
   and typed exceptional roots. Organization-neutral runtime-composition and
   infrastructure profiles keep executable hosting separate from deployment
-  intent and operational control.
+  intent and operational control. Application and application-collection
+  profiles distinguish an independently released application from a repository
+  containing several independently bounded applications. Taxonomy,
+  conformance-suite, and documentation-site profiles separate canonical data,
+  executable verification, evidence, and rendered documentation.
 - SPDX headers for tracked source files, with typed generated/vendored/
   third-party exclusions that can be required to match current tracked files.
 - Protobuf schema contracts, generated output freshness, and adapter boundary
@@ -54,14 +57,19 @@ runner so policy fixes do not remain trapped in stale local copies.
   every `bytes` and `string` schema field.
 - Command matrices for repository-specific release suites.
 
-The current vendored-core contract marker is:
+The package, Git release, and vendored core share one semantic version. The
+current marker is:
 
 ```js
 assertContains(
   "scripts/release-readiness/core.mjs",
-  "RELEASE_READINESS_CORE_CONTRACT_VERSION = 12",
+  'RELEASE_READINESS_VERSION = "0.6.0"',
 );
 ```
+
+Numeric core-contract identifiers are no longer supported. Consumer policy,
+the package version, release tag, and vendored-core marker must use the same
+semantic release version.
 
 ## Usage
 
@@ -177,14 +185,16 @@ SPDX exceptions should use typed entries such as
 `requireExclusionsMatched` and `requireExclusionReasons` so deleted directories
 cannot leave silent, stale policy exceptions behind.
 
-The default SPDX policy expects ReallyMe's `MIT OR Apache-2.0` header. This
-default does not choose or change a consumer repository's license. Repositories
-belonging to another organization, or ReallyMe repositories using different
-terms, must pass their own exact `copyright` and `license` values to
-`assertSpdxHeaders` and maintain the corresponding license files. The vendored
-`core.mjs` remains ReallyMe-authored, dual-licensed code: preserve its header
-and third-party notice, and exclude that exact vendored path with reason
-`"vendored"` instead of restamping it with the consumer's attribution.
+The default SPDX policy expects ReallyMe's `MIT OR Apache-2.0` header on
+governed source and configuration files. Markdown and plain-text files are not
+header-governed by default. This policy does not choose or change a consumer
+repository's license. Repositories belonging to another organization, or
+ReallyMe repositories using different terms, must pass their own exact
+`copyright` and `license` values to `assertSpdxHeaders` and maintain the
+corresponding license files. The vendored `core.mjs` remains ReallyMe-authored,
+dual-licensed code: preserve its header and third-party notice, and exclude
+that exact vendored path with reason `"vendored"` instead of restamping it with
+the consumer's attribution.
 
 ## Protobuf Notes
 
@@ -212,8 +222,10 @@ envelope from both paths.
 Licensed under either the [MIT License](LICENSE-MIT) or the
 [Apache License, Version 2.0](LICENSE-APACHE), at your option.
 
-## Copyright and Trademarks
+Third-party components retain their own licenses and notices.
+
+## Copyright And Trademarks
 
 Copyright © 2026 by ReallyMe LLC.
 
-ReallyMe® is a registered trademark of ReallyMe LLC.
+ReallyMe<sup>®</sup> is a registered trademark of ReallyMe LLC.

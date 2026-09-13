@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
+// SPDX-FileCopyrightText: 2026 ReallyMe LLC
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
@@ -26,6 +26,7 @@ const repositoryPolicy = {
   vendoredCore: {
     scriptPath: "scripts/check_release_readiness.mjs",
     corePath: "scripts/release-readiness/core.mjs",
+    version: "0.6.0",
   },
   workflowActions: {},
   nodeWorkflows: {
@@ -48,8 +49,8 @@ const repositoryPolicy = {
   // Opt in after mapping the repository against docs/repository-shapes.md.
   // repositoryShape: {
   //   archetype: "protocol-engine",
-  //   requiredLanes: ["crates", "contracts", "docs", "scripts", ".github"],
-  //   optionalLanes: ["bindings", "gen", "conformance", "vectors", "fuzz", "examples"],
+  //   requiredLanes: ["crates", "contracts", "conformance", "docs", "scripts", ".github"],
+  //   optionalLanes: ["bindings", "gen", "vectors", "fuzz", "examples"],
   //   exceptions: [],
   //   crates: [
   //     { path: "crates/REPLACE_DOMAIN_CRATE", role: "domain" },
@@ -164,7 +165,6 @@ const repositoryPolicy = {
       ".jsx",
       ".kt",
       ".kts",
-      ".md",
       ".mjs",
       ".mts",
       ".proto",

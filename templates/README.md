@@ -1,9 +1,3 @@
-<!--
-SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
-
-SPDX-License-Identifier: MIT OR Apache-2.0
--->
-
 # Local Release Checker Template
 
 Use this template for a ReallyMe Rust repository that owns an executable
@@ -25,7 +19,8 @@ file to every consumer.
 The template enables the following mandatory baseline through
 `assertReallyMeRustProtoRepositoryPolicy`:
 
-- the checker and vendored core are Git-tracked and use the expected contract;
+- the checker and vendored core are Git-tracked and use the package's exact
+  semantic release version;
 - GitHub Actions are pinned to immutable commits and Node jobs use Node 24;
 - cargo-fuzz installs are exact-version pinned, locked, and present in both
   pull-request and scheduled fuzz lanes through named workflow steps;
@@ -41,10 +36,10 @@ The template enables the following mandatory baseline through
   production/test ceilings and require their language-native verification
   roles, while rejecting unsafe operations, embedded tests, suppressions, weak
   error boundaries, and substantive facades;
-- tracked authored sources carry ReallyMe `MIT OR Apache-2.0` SPDX headers,
-  while every
-  generated, vendored, or third-party exclusion is typed and still matches a
-  tracked path;
+- tracked authored source and configuration files carry ReallyMe
+  `MIT OR Apache-2.0` SPDX headers, while Markdown and plain-text documents stay
+  header-free and every generated, vendored, or third-party exclusion is typed
+  and still matches a tracked path;
 - protobuf defines messages only, one self-describing operation request, and
   one binary status/payload result envelope;
 - generated ProtoJSON is a request convenience and returns that same binary
