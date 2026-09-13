@@ -1,13 +1,21 @@
 {
   "name": "@reallyme/release-readiness",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "description": "Shared release-readiness guardrails for ReallyMe repositories.",
-  "license": "Apache-2.0",
+  "license": "MIT OR Apache-2.0",
   "bin": {
     "reallyme-release-readiness": "scripts/run-consumer-check.mjs"
   },
+  "files": [
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "core.mjs",
+    "docs/",
+    "scripts/run-consumer-check.mjs",
+    "templates/"
+  ],
   "scripts": {
     "check": "node --check core.mjs && node --check scripts/check_release_readiness.mjs && node --check scripts/run-consumer-check.mjs && node --test test/*.test.mjs && node scripts/check_release_readiness.mjs"
   },

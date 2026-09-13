@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
 //
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 import assert from "node:assert/strict";
 import {
@@ -71,6 +71,55 @@ const createTrackedFixture = () => {
   return root;
 };
 
+const createProtocolShapeFixture = () => {
+  const root = createFixture();
+  for (const directory of [
+    "contracts",
+    "crates/openid4vci",
+    "crates/proto",
+    "crates/proto-codec",
+    "docs",
+    "scripts/release-readiness",
+  ]) {
+    mkdirSync(join(root, directory), { recursive: true });
+  }
+  copyFileSync(
+    new URL("../core.mjs", import.meta.url),
+    join(root, "scripts", "release-readiness", "core.mjs"),
+  );
+  writeFileSync(join(root, "Cargo.toml"), "[workspace]\nmembers = []\n");
+  writeFileSync(join(root, "contracts", "api.md"), "contract\n");
+  writeFileSync(join(root, "crates", "openid4vci", "Cargo.toml"), "[package]\nname = \"openid4vci\"\n");
+  writeFileSync(join(root, "crates", "proto", "Cargo.toml"), "[package]\nname = \"proto\"\n");
+  writeFileSync(join(root, "crates", "proto", "openid4vci.proto"), "syntax = \"proto3\";\n");
+  writeFileSync(
+    join(root, "crates", "proto-codec", "Cargo.toml"),
+    "[package]\nname = \"proto-codec\"\n",
+  );
+  writeFileSync(join(root, "docs", "architecture.md"), "architecture\n");
+  writeFileSync(join(root, "scripts", "check_release_readiness.mjs"), "export {};\n");
+  const gitInit = spawnSync("git", ["init", "--quiet"], { cwd: root, encoding: "utf8" });
+  assert.equal(gitInit.status, 0, gitInit.stderr);
+  const gitAdd = spawnSync("git", ["add", "."], { cwd: root, encoding: "utf8" });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  return root;
+};
+
+const protocolShapePolicy = {
+  archetype: "protocol-engine",
+  requiredLanes: ["crates", "contracts", "docs", "scripts", ".github"],
+  optionalLanes: [],
+  exceptions: [],
+  crates: [
+    { path: "crates/openid4vci", role: "domain" },
+    { path: "crates/proto", role: "proto" },
+    { path: "crates/proto-codec", role: "proto-codec" },
+  ],
+  subLanes: {},
+  forbiddenPaths: [],
+  requireReleaseReadiness: true,
+};
+
 const runFixtureScript = (root, body) =>
   spawnSync(
     process.execPath,
@@ -86,6 +135,51 @@ ${body}`,
     ],
     { encoding: "utf8" },
   );
+
+const runTrackedFixtureScript = (root, body) => {
+  const fixtureCoreUrl = pathToFileURL(
+    join(root, "scripts", "release-readiness", "core.mjs"),
+  ).href;
+  return spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      `import { createReleaseReadinessContext } from ${JSON.stringify(fixtureCoreUrl)};
+const context = createReleaseReadinessContext({
+  scriptUrl: ${JSON.stringify(pathToFileURL(join(root, "scripts", "check.mjs")).href)},
+  requireTrackedFiles: true,
+});
+${body}`,
+    ],
+    { cwd: root, encoding: "utf8" },
+  );
+};
+
+const verificationPolicy = (roles) => [
+  {
+    roles,
+    command: process.execPath,
+    args: ["--version"],
+    options: { capture: true },
+  },
+];
+
+const typeScriptConfiguration = {
+  compilerOptions: {
+    strict: true,
+    noImplicitAny: true,
+    noUncheckedIndexedAccess: true,
+    exactOptionalPropertyTypes: true,
+    useUnknownInCatchVariables: true,
+    noImplicitOverride: true,
+    noFallthroughCasesInSwitch: true,
+  },
+};
+
+const typeScriptStaticAnalysis = {
+  files: [{ path: "tsconfig.json", required: ["strict"] }],
+};
 
 test("workflow and text policies accept pinned, exact repository inputs", () => {
   const root = createFixture();
@@ -736,6 +830,36 @@ jobs:
   assert.match(result.stderr, /defines workflow step Run check more than once/u);
 });
 
+test("exact workflow checks can disambiguate repeated step names by job", () => {
+  const root = createFixture();
+  writeFileSync(
+    join(root, ".github", "workflows", "repeated.yml"),
+    `name: Repeated
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@${fullSha}
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@${fullSha}
+`,
+  );
+  const context = createContext(root);
+
+  context.assertWorkflowPolicy({
+    path: ".github/workflows/repeated.yml",
+    usesSteps: [
+      { job: "build", name: "Checkout", uses: `actions/checkout@${fullSha}` },
+      { job: "release", name: "Checkout", uses: `actions/checkout@${fullSha}` },
+    ],
+  });
+});
+
 test("generated freshness rejects mutations outside declared generated paths", () => {
   const root = createTrackedFixture();
   const fixtureCoreUrl = pathToFileURL(
@@ -869,7 +993,1085 @@ context.assertSpdxHeaders({ excludedPrefixes: [".github"] });`,
   );
 
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /missing\.rs is missing the ReallyMe SPDX/u);
+  assert.match(result.stderr, /missing\.rs is missing the configured SPDX/u);
+});
+
+test("SPDX policy defaults to ReallyMe's dual-license header", () => {
+  const root = createTrackedFixture();
+  writeFileSync(
+    join(root, "reallyme.rs"),
+    `// SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
+//
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+pub fn create() {}
+`,
+  );
+  const gitAdd = spawnSync("git", ["add", "reallyme.rs"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const result = runTrackedFixtureScript(
+    root,
+    `context.assertSpdxHeaders({
+  exclusions: [{ path: ".github", reason: "third-party" }],
+  requireExclusionsMatched: true,
+  requireExclusionReasons: true,
+});`,
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("SPDX policy supports a different copyright owner and license", () => {
+  const root = createTrackedFixture();
+  writeFileSync(
+    join(root, "eggplant.rs"),
+    `// SPDX-FileCopyrightText: Copyright © 2026 Eggplant Labs. All rights reserved
+//
+// SPDX-License-Identifier: AGPL-3.0-only
+
+pub fn owned_by_eggplant_labs() {}
+`,
+  );
+  const gitAdd = spawnSync("git", ["add", "eggplant.rs"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const result = runTrackedFixtureScript(
+    root,
+    `context.assertSpdxHeaders({
+  exclusions: [
+    { path: ".github", reason: "third-party" },
+    { path: "scripts/release-readiness", reason: "vendored" },
+  ],
+  requireExclusionsMatched: true,
+  requireExclusionReasons: true,
+  copyright: "SPDX-FileCopyrightText: Copyright © 2026 Eggplant Labs. All rights reserved",
+  license: "SPDX-License-Identifier: AGPL-3.0-only",
+});`,
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("SPDX policy accepts typed exclusions and rejects stale exclusions", () => {
+  const root = createTrackedFixture();
+  writeFileSync(join(root, "generated", "output.rs"), "pub fn generated() {}\n");
+  const gitAdd = spawnSync("git", ["add", "generated/output.rs"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const policy = `{
+  exclusions: [
+    { path: ".github", reason: "third-party" },
+    { path: "generated", reason: "generated" },
+  ],
+  requireExclusionsMatched: true,
+  requireExclusionReasons: true,
+}`;
+
+  const accepted = runTrackedFixtureScript(
+    root,
+    `context.assertSpdxHeaders(${policy});`,
+  );
+  assert.equal(accepted.status, 0, accepted.stderr);
+
+  const stale = runTrackedFixtureScript(
+    root,
+    `context.assertSpdxHeaders({
+  ...${policy},
+  exclusions: [
+    { path: ".github", reason: "third-party" },
+    { path: "generated", reason: "generated" },
+    { path: "retired-generated", reason: "generated" },
+  ],
+});`,
+  );
+  assert.equal(stale.status, 1);
+  assert.match(stale.stderr, /retired-generated does not match a governed tracked file/u);
+});
+
+test("SPDX policy can require typed reasons for every exclusion", () => {
+  const root = createTrackedFixture();
+  const result = runTrackedFixtureScript(
+    root,
+    `context.assertSpdxHeaders({
+  excludedPrefixes: [".github"],
+  requireExclusionReasons: true,
+});`,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /\.github requires a typed reason/u);
+});
+
+test("repository shape policy accepts a declared protocol-engine layout", () => {
+  const root = createProtocolShapeFixture();
+  const context = createContext(root);
+
+  context.assertRepositoryShapePolicy(protocolShapePolicy);
+});
+
+test("repository shape policy rejects forbidden and undeclared root lanes", () => {
+  for (const [path, expected] of [
+    ["proto/schema.proto", /forbids root lane proto/u],
+    ["misc/notes.md", /undeclared root lane misc/u],
+  ]) {
+    const root = createProtocolShapeFixture();
+    mkdirSync(join(root, path, ".."), { recursive: true });
+    writeFileSync(join(root, path), "tracked\n");
+    const gitAdd = spawnSync("git", ["add", path], { cwd: root, encoding: "utf8" });
+    assert.equal(gitAdd.status, 0, gitAdd.stderr);
+    const result = runFixtureScript(
+      root,
+      `context.assertRepositoryShapePolicy(${JSON.stringify(protocolShapePolicy)});`,
+    );
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, expected);
+  }
+});
+
+test("repository shape policy requires proto-codec to accompany canonical proto", () => {
+  const root = createProtocolShapeFixture();
+  const gitRemove = spawnSync("git", ["rm", "-r", "-f", "crates/proto"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitRemove.status, 0, gitRemove.stderr);
+  const policy = {
+    ...protocolShapePolicy,
+    crates: [
+      { path: "crates/openid4vci", role: "domain" },
+      { path: "crates/proto-codec", role: "proto-codec" },
+    ],
+  };
+  const result = runFixtureScript(
+    root,
+    `context.assertRepositoryShapePolicy(${JSON.stringify(policy)});`,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /proto-codec requires a canonical proto crate/u);
+});
+
+test("repository shape policy rejects schemas and nested crates outside the canonical boundary", () => {
+  const cases = [
+    {
+      path: "crates/openid4vci/schema.proto",
+      content: "syntax = \"proto3\";\n",
+      expected: /every protobuf schema inside crates\/proto/u,
+    },
+    {
+      path: "crates/proto/nested/Cargo.toml",
+      content: "[package]\nname = \"nested\"\n",
+      expected: /Cargo crate crates\/proto\/nested is undeclared/u,
+    },
+  ];
+  for (const entry of cases) {
+    const root = createProtocolShapeFixture();
+    mkdirSync(join(root, entry.path, ".."), { recursive: true });
+    writeFileSync(join(root, entry.path), entry.content);
+    const gitAdd = spawnSync("git", ["add", entry.path], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(gitAdd.status, 0, gitAdd.stderr);
+    const result = runFixtureScript(
+      root,
+      `context.assertRepositoryShapePolicy(${JSON.stringify(protocolShapePolicy)});`,
+    );
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, entry.expected);
+  }
+});
+
+test("repository shape policy validates declared sublanes", () => {
+  const root = createProtocolShapeFixture();
+  mkdirSync(join(root, "bindings", "ffi"), { recursive: true });
+  mkdirSync(join(root, "bindings", "internal"), { recursive: true });
+  writeFileSync(join(root, "bindings", "ffi", "README.md"), "ffi\n");
+  writeFileSync(join(root, "bindings", "internal", "README.md"), "internal\n");
+  const gitAdd = spawnSync("git", ["add", "bindings"], { cwd: root, encoding: "utf8" });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const policy = {
+    ...protocolShapePolicy,
+    optionalLanes: ["bindings"],
+    subLanes: { bindings: ["ffi"] },
+  };
+  const result = runFixtureScript(
+    root,
+    `context.assertRepositoryShapePolicy(${JSON.stringify(policy)});`,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /undeclared bindings sublane internal/u);
+});
+
+test("repository shape policy accepts a fully declared developer-platform layout", () => {
+  const root = createFixture();
+  const subLanes = {
+    bindings: ["ffi", "jni", "wasm"],
+    gen: ["swift", "kotlin", "java", "typescript"],
+    packages: ["swift", "kotlin", "kotlin-android", "ts"],
+  };
+  for (const [parent, children] of Object.entries(subLanes)) {
+    for (const child of children) {
+      mkdirSync(join(root, parent, child), { recursive: true });
+      writeFileSync(join(root, parent, child, "README.md"), `${parent}/${child}\n`);
+    }
+  }
+  for (const lane of ["examples", "contracts", "conformance", "docs"]) {
+    mkdirSync(join(root, lane), { recursive: true });
+    writeFileSync(join(root, lane, "README.md"), `${lane}\n`);
+  }
+  mkdirSync(join(root, "scripts", "release-readiness"), { recursive: true });
+  copyFileSync(
+    new URL("../core.mjs", import.meta.url),
+    join(root, "scripts", "release-readiness", "core.mjs"),
+  );
+  writeFileSync(join(root, "scripts", "check_release_readiness.mjs"), "export {};\n");
+  const gitInit = spawnSync("git", ["init", "--quiet"], { cwd: root, encoding: "utf8" });
+  assert.equal(gitInit.status, 0, gitInit.stderr);
+  const gitAdd = spawnSync("git", ["add", "."], { cwd: root, encoding: "utf8" });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const context = createContext(root);
+
+  context.assertRepositoryShapePolicy({
+    archetype: "developer-platform",
+    requiredLanes: [
+      "bindings",
+      "gen",
+      "packages",
+      "examples",
+      "contracts",
+      "conformance",
+      "docs",
+      "scripts",
+      ".github",
+    ],
+    optionalLanes: [],
+    exceptions: [],
+    crates: [],
+    subLanes,
+    forbiddenPaths: [],
+    requireReleaseReadiness: true,
+  });
+});
+
+test("repository shape policy accepts matched typed exceptions and rejects stale ones", () => {
+  const root = createProtocolShapeFixture();
+  mkdirSync(join(root, "vendor"), { recursive: true });
+  writeFileSync(join(root, "vendor", "NOTICE"), "third-party\n");
+  const gitAdd = spawnSync("git", ["add", "vendor/NOTICE"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const policy = {
+    ...protocolShapePolicy,
+    exceptions: [{ path: "vendor", reason: "vendored" }],
+  };
+  const context = createContext(root);
+  context.assertRepositoryShapePolicy(policy);
+
+  const stale = {
+    ...policy,
+    exceptions: [
+      { path: "vendor", reason: "vendored" },
+      { path: ".devcontainer", reason: "build-tool" },
+    ],
+  };
+  const result = runFixtureScript(
+    root,
+    `context.assertRepositoryShapePolicy(${JSON.stringify(stale)});`,
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /exception \.devcontainer does not match a tracked root lane/u);
+});
+
+test("repository shape policy keeps reusable vectors out of conformance fixtures", () => {
+  const root = createProtocolShapeFixture();
+  mkdirSync(join(root, "conformance", "vectors"), { recursive: true });
+  writeFileSync(join(root, "conformance", "vectors", "credential.json"), "{}\n");
+  const gitAdd = spawnSync("git", ["add", "conformance/vectors/credential.json"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const policy = {
+    ...protocolShapePolicy,
+    optionalLanes: ["conformance"],
+  };
+  const result = runFixtureScript(
+    root,
+    `context.assertRepositoryShapePolicy(${JSON.stringify(policy)});`,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /reusable vectors at root vectors/u);
+});
+
+test("repository shape policy allows only tooling to omit release readiness", () => {
+  const root = createProtocolShapeFixture();
+  const policy = {
+    ...protocolShapePolicy,
+    requireReleaseReadiness: false,
+  };
+  const result = runFixtureScript(
+    root,
+    `context.assertRepositoryShapePolicy(${JSON.stringify(policy)});`,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /disabling release readiness only for tooling/u);
+});
+
+test("Rust source policy enforces a shrinking-only source-size baseline", () => {
+  const root = createTrackedFixture();
+  mkdirSync(join(root, "crates", "example", "src"), { recursive: true });
+  mkdirSync(join(root, "scripts", "policy"), { recursive: true });
+  const sourcePath = "crates/example/src/worker.rs";
+  writeFileSync(join(root, sourcePath), "one\ntwo\nthree\nfour\nfive\nsix\nseven\n");
+  writeFileSync(
+    join(root, "scripts", "policy", "source-size-baseline.tsv"),
+    `${sourcePath}\t7\n`,
+  );
+  const gitAdd = spawnSync(
+    "git",
+    ["add", sourcePath, "scripts/policy/source-size-baseline.tsv"],
+    { cwd: root, encoding: "utf8" },
+  );
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const context = createContext(root);
+  const policy = {
+    roots: ["crates"],
+    baselinePath: "scripts/policy/source-size-baseline.tsv",
+    productionTargetLines: 5,
+    productionHardLines: 10,
+    testTargetLines: 8,
+    testHardLines: 12,
+    moduleHardLines: 4,
+  };
+
+  context.assertRustSourcePolicy(policy);
+
+  writeFileSync(
+    join(root, sourcePath),
+    "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\n",
+  );
+  const result = runFixtureScript(
+    root,
+    `context.assertRustSourcePolicy(${JSON.stringify(policy)});`,
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /grew from its baseline 7 to 8 lines/u);
+});
+
+test("Rust source policy rejects wildcard imports", () => {
+  const root = createTrackedFixture();
+  mkdirSync(join(root, "crates", "example", "src"), { recursive: true });
+  writeFileSync(
+    join(root, "crates", "example", "src", "worker.rs"),
+    `use crate::internal::{
+    Item,
+    *,
+};
+
+pub fn work() {}
+`,
+  );
+  const gitAdd = spawnSync("git", ["add", "crates/example/src/worker.rs"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const result = runFixtureScript(
+    root,
+    `context.assertRustSourcePolicy({
+  roots: ["crates"],
+  productionTargetLines: 10,
+  productionHardLines: 20,
+  testTargetLines: 20,
+  testHardLines: 30,
+  moduleHardLines: 10,
+});`,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /worker\.rs must not use a wildcard import/u);
+});
+
+test("Rust source policy governs tracked Rust outside crates by default", () => {
+  const root = createTrackedFixture();
+  mkdirSync(join(root, "bindings", "ffi", "src"), { recursive: true });
+  writeFileSync(
+    join(root, "bindings", "ffi", "src", "create.rs"),
+    "pub fn create() {}\n",
+  );
+  const gitAdd = spawnSync("git", ["add", "bindings/ffi/src/create.rs"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const context = createContext(root);
+
+  context.assertRustSourcePolicy();
+});
+
+test("Rust source policy caps production and example files at 500 lines by default", () => {
+  for (const sourcePath of [
+    "crates/example/src/implementation.rs",
+    "crates/example/examples/issuer.rs",
+  ]) {
+    const root = createTrackedFixture();
+    mkdirSync(join(root, sourcePath, ".."), { recursive: true });
+    writeFileSync(join(root, sourcePath), `${"line\n".repeat(501)}`);
+    const gitAdd = spawnSync("git", ["add", sourcePath], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(gitAdd.status, 0, gitAdd.stderr);
+    const result = runFixtureScript(
+      root,
+      "context.assertRustSourcePolicy({ roots: [\"crates\"] });",
+    );
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /501 lines, exceeding its hard limit 500/u);
+  }
+});
+
+test("Rust source policy allows 800 lines only in separate test files", () => {
+  const root = createTrackedFixture();
+  const sourcePath = "crates/example/tests/integration.rs";
+  mkdirSync(join(root, sourcePath, ".."), { recursive: true });
+  writeFileSync(join(root, sourcePath), "line\n".repeat(800));
+  let gitAdd = spawnSync("git", ["add", sourcePath], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  let result = runFixtureScript(
+    root,
+    "context.assertRustSourcePolicy({ roots: [\"crates\"] });",
+  );
+  assert.equal(result.status, 0, result.stderr);
+
+  writeFileSync(join(root, sourcePath), "line\n".repeat(801));
+  gitAdd = spawnSync("git", ["add", sourcePath], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  result = runFixtureScript(
+    root,
+    "context.assertRustSourcePolicy({ roots: [\"crates\"] });",
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /801 lines, exceeding its hard limit 800/u);
+});
+
+test("Rust source policy requires test implementations to live in separate files", () => {
+  const root = createTrackedFixture();
+  mkdirSync(join(root, "crates", "example", "src"), { recursive: true });
+  writeFileSync(
+    join(root, "crates", "example", "src", "implementation.rs"),
+    `pub fn implementation() {}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn implementation_works() {}
+}
+`,
+  );
+  let gitAdd = spawnSync("git", ["add", "crates/example/src/implementation.rs"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  let result = runFixtureScript(
+    root,
+    "context.assertRustSourcePolicy({ roots: [\"crates\"] });",
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /must keep test implementations in a separate test file/u);
+
+  writeFileSync(
+    join(root, "crates", "example", "src", "implementation.rs"),
+    `const POLICY_EXAMPLE: &str = r#"#[test] use crate::internal::*; panic!(); Result<(), String>"#;
+
+/*
+#[cfg(test)]
+mod commented_out_tests {
+    use crate::internal::*;
+    panic!("commented out");
+}
+*/
+
+pub fn implementation() {}
+
+#[cfg(test)]
+mod tests;
+`,
+  );
+  writeFileSync(
+    join(root, "crates", "example", "src", "tests.rs"),
+    `#[test]
+fn implementation_works() {}
+`,
+  );
+  gitAdd = spawnSync(
+    "git",
+    ["add", "crates/example/src/implementation.rs", "crates/example/src/tests.rs"],
+    { cwd: root, encoding: "utf8" },
+  );
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  result = runFixtureScript(
+    root,
+    "context.assertRustSourcePolicy({ roots: [\"crates\"] });",
+  );
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("Rust source policy keeps lib.rs and mod.rs as thin facades", () => {
+  const root = createTrackedFixture();
+  mkdirSync(join(root, "crates", "example", "src"), { recursive: true });
+  writeFileSync(
+    join(root, "crates", "example", "src", "lib.rs"),
+    "pub fn create() {}\n",
+  );
+  let gitAdd = spawnSync("git", ["add", "crates/example/src/lib.rs"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  let result = runFixtureScript(
+    root,
+    "context.assertRustSourcePolicy({ roots: [\"crates\"] });",
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /lib\.rs must remain a declaration-and-re-export-only facade/u);
+
+  writeFileSync(
+    join(root, "crates", "example", "src", "lib.rs"),
+    "pub mod create;\npub use create::create;\n",
+  );
+  writeFileSync(
+    join(root, "crates", "example", "src", "create.rs"),
+    "pub fn create() {}\n",
+  );
+  gitAdd = spawnSync(
+    "git",
+    ["add", "crates/example/src/lib.rs", "crates/example/src/create.rs"],
+    { cwd: root, encoding: "utf8" },
+  );
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  result = runFixtureScript(
+    root,
+    "context.assertRustSourcePolicy({ roots: [\"crates\"] });",
+  );
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("Rust source policy rejects panic shortcuts and dynamic error surfaces", () => {
+  for (const [source, expected] of [
+    ["pub fn create() { panic!(\"failed\"); }\n", /forbidden production panic macro/u],
+    [
+      "pub fn create() -> Result<(), String> { Err(String::new()) }\n",
+      /forbidden string Result error/u,
+    ],
+    [
+      "pub enum CreateError { Invalid(String) }\n",
+      /error definition CreateError contains a dynamic or string field/u,
+    ],
+  ]) {
+    const root = createTrackedFixture();
+    mkdirSync(join(root, "crates", "example", "src"), { recursive: true });
+    writeFileSync(join(root, "crates", "example", "src", "create.rs"), source);
+    const gitAdd = spawnSync("git", ["add", "crates/example/src/create.rs"], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(gitAdd.status, 0, gitAdd.stderr);
+    const result = runFixtureScript(
+      root,
+      "context.assertRustSourcePolicy({ roots: [\"crates\"] });",
+    );
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, expected);
+  }
+});
+
+test("TypeScript source policy accepts strict, typed, separately tested code", () => {
+  const root = createTrackedFixture();
+  mkdirSync(join(root, "src"), { recursive: true });
+  writeFileSync(
+    join(root, "tsconfig.json"),
+    `${JSON.stringify(typeScriptConfiguration, null, 2)}\n`,
+  );
+  writeFileSync(
+    join(root, "src", "create.ts"),
+    `export type CreateErrorCode = "invalid-input";
+
+export class CreateError extends Error {
+  public readonly code: CreateErrorCode;
+
+  public constructor(code: CreateErrorCode) {
+    super(code);
+    this.code = code;
+  }
+}
+
+export const create = (input: unknown): Readonly<{ value: unknown }> => ({ value: input });
+`,
+  );
+  writeFileSync(
+    join(root, "src", "create.test.ts"),
+    `test("create", () => {
+  // @ts-expect-error -- malicious input must remain rejected by the type surface
+  const invalid: never = "invalid";
+  void invalid;
+});
+`,
+  );
+  const gitAdd = spawnSync("git", ["add", "tsconfig.json", "src"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const context = createContext(root);
+
+  context.assertTypeScriptSourcePolicy({
+    roots: ["src"],
+    tsconfigPaths: ["tsconfig.json"],
+    staticAnalysis: typeScriptStaticAnalysis,
+    verification: verificationPolicy(["typecheck", "lint", "test"]),
+  });
+});
+
+test("TypeScript source policy rejects unsafe and structurally weak production code", () => {
+  const cases = [
+    ["export const value: any = 1;\n", /forbidden TypeScript any/u],
+    ['export * from "./internal.js";\n', /wildcard import or export/u],
+    ["test(\"embedded\", () => undefined);\n", /separate test file/u],
+    ["export const value = candidate!;\n", /unsafe TypeScript assertion/u],
+    ["export const value = candidate as unknown;\n", /unsafe TypeScript assertion/u],
+    ["export const create = () => { throw new Error(\"failed\"); };\n", /untyped TypeScript failure/u],
+    ["// @ts-ignore\nexport const value = 1;\n", /forbidden TypeScript or ESLint suppression/u],
+  ];
+  for (const [source, expected] of cases) {
+    const root = createTrackedFixture();
+    mkdirSync(join(root, "src"), { recursive: true });
+    writeFileSync(join(root, "tsconfig.json"), `${JSON.stringify(typeScriptConfiguration)}\n`);
+    writeFileSync(join(root, "src", "create.ts"), source);
+    const gitAdd = spawnSync("git", ["add", "tsconfig.json", "src/create.ts"], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(gitAdd.status, 0, gitAdd.stderr);
+    const result = runFixtureScript(
+      root,
+      `context.assertTypeScriptSourcePolicy(${JSON.stringify({
+        roots: ["src"],
+        tsconfigPaths: ["tsconfig.json"],
+        staticAnalysis: typeScriptStaticAnalysis,
+        verification: verificationPolicy(["typecheck", "lint", "test"]),
+      })});`,
+    );
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, expected);
+  }
+});
+
+test("TypeScript source policy requires explicit strict compiler options and thin facades", () => {
+  const root = createTrackedFixture();
+  mkdirSync(join(root, "src"), { recursive: true });
+  const incompleteConfiguration = structuredClone(typeScriptConfiguration);
+  delete incompleteConfiguration.compilerOptions.noUncheckedIndexedAccess;
+  writeFileSync(join(root, "tsconfig.json"), `${JSON.stringify(incompleteConfiguration)}\n`);
+  writeFileSync(join(root, "src", "index.ts"), "export const create = () => 1;\n");
+  const gitAdd = spawnSync("git", ["add", "tsconfig.json", "src/index.ts"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const policy = {
+    roots: ["src"],
+    tsconfigPaths: ["tsconfig.json"],
+    staticAnalysis: typeScriptStaticAnalysis,
+    verification: verificationPolicy(["typecheck", "lint", "test"]),
+  };
+  let result = runFixtureScript(
+    root,
+    `context.assertTypeScriptSourcePolicy(${JSON.stringify(policy)});`,
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /noUncheckedIndexedAccess must be explicitly true/u);
+
+  writeFileSync(join(root, "tsconfig.json"), `${JSON.stringify(typeScriptConfiguration)}\n`);
+  result = runFixtureScript(
+    root,
+    `context.assertTypeScriptSourcePolicy(${JSON.stringify(policy)});`,
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /index\.ts must remain an explicit import, export, and type-only facade/u);
+});
+
+test("Swift source policy accepts typed throws and separately located tests", () => {
+  const root = createTrackedFixture();
+  mkdirSync(join(root, "Sources", "Identity"), { recursive: true });
+  mkdirSync(join(root, "Tests", "IdentityTests"), { recursive: true });
+  writeFileSync(
+    join(root, "Package.swift"),
+    "// StrictConcurrency\n// warnings-as-errors\n",
+  );
+  writeFileSync(
+    join(root, "Sources", "Identity", "create.swift"),
+    `enum CreateError: Error { case invalidInput }
+
+func create() throws(CreateError) {}
+`,
+  );
+  writeFileSync(
+    join(root, "Tests", "IdentityTests", "CreateTests.swift"),
+    "final class CreateTests: XCTestCase {}\n",
+  );
+  const gitAdd = spawnSync("git", ["add", "Package.swift", "Sources", "Tests"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const context = createContext(root);
+
+  context.assertSwiftSourcePolicy({
+    roots: ["Sources", "Tests"],
+    configuration: {
+      files: [{ path: "Package.swift", required: ["StrictConcurrency", "warnings-as-errors"] }],
+    },
+    verification: verificationPolicy(["format", "lint", "build", "test"]),
+  });
+});
+
+test("Swift source policy rejects unsafe operations, untyped errors, and escape hatches", () => {
+  const cases = [
+    ["func create() { _ = try! operation() }\n", /unsafe or terminating Swift operation/u],
+    ["func create() throws {}\n", /typed throws or a typed Result/u],
+    ["func create() { fatalError() }\n", /unsafe or terminating Swift operation/u],
+    ["final class EmbeddedTests: XCTestCase {}\n", /separate test file/u],
+    ["struct Value: @unchecked Sendable {}\n", /concurrency escape hatch/u],
+    ["// swiftlint:disable all\nfunc create() {}\n", /SwiftLint suppression/u],
+  ];
+  for (const [source, expected] of cases) {
+    const root = createTrackedFixture();
+    mkdirSync(join(root, "Sources", "Identity"), { recursive: true });
+    writeFileSync(join(root, "Package.swift"), "// StrictConcurrency\n");
+    writeFileSync(join(root, "Sources", "Identity", "create.swift"), source);
+    const gitAdd = spawnSync("git", ["add", "Package.swift", "Sources"], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(gitAdd.status, 0, gitAdd.stderr);
+    const result = runFixtureScript(
+      root,
+      `context.assertSwiftSourcePolicy(${JSON.stringify({
+        roots: ["Sources"],
+        configuration: {
+          files: [{ path: "Package.swift", required: ["StrictConcurrency"] }],
+        },
+        verification: verificationPolicy(["format", "lint", "build", "test"]),
+      })});`,
+    );
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, expected);
+  }
+});
+
+test("Kotlin source policy accepts explicit API configuration and separate tests", () => {
+  const root = createTrackedFixture();
+  mkdirSync(join(root, "src", "main", "kotlin"), { recursive: true });
+  mkdirSync(join(root, "src", "test", "kotlin"), { recursive: true });
+  writeFileSync(
+    join(root, "build.gradle.kts"),
+    "explicitApi()\nallWarningsAsErrors = true\n",
+  );
+  writeFileSync(
+    join(root, "src", "main", "kotlin", "Create.kt"),
+    `sealed interface CreateOutcome
+data object Created : CreateOutcome
+fun create(): CreateOutcome = Created
+`,
+  );
+  writeFileSync(
+    join(root, "src", "test", "kotlin", "CreateTest.kt"),
+    "@Test fun createSucceeds() {}\n",
+  );
+  const gitAdd = spawnSync("git", ["add", "build.gradle.kts", "src"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const context = createContext(root);
+
+  context.assertKotlinSourcePolicy({
+    roots: ["src"],
+    configuration: {
+      files: [
+        {
+          path: "build.gradle.kts",
+          required: ["explicitApi()", "allWarningsAsErrors = true"],
+        },
+      ],
+    },
+    verification: verificationPolicy(["format", "static-analysis", "compile", "test"]),
+  });
+});
+
+test("Kotlin source policy rejects unsafe operations and weak boundaries", () => {
+  const cases = [
+    ["fun create(value: String?) = value!!\n", /unsafe or terminating Kotlin operation/u],
+    ["fun create(): Nothing = error(\"failed\")\n", /unsafe or terminating Kotlin operation/u],
+    ["fun create(value: Any) = value as String\n", /unsafe Kotlin cast/u],
+    ["fun create(): Nothing = throw RuntimeException()\n", /generic Kotlin error/u],
+    ["@Suppress(\"UNCHECKED_CAST\")\nfun create() {}\n", /Kotlin suppression/u],
+    ["import example.internal.*\nfun create() {}\n", /wildcard Kotlin import/u],
+    ["lateinit var value: String\n", /Kotlin lateinit state/u],
+    ["@Test fun embeddedTest() {}\n", /separate test file/u],
+  ];
+  for (const [source, expected] of cases) {
+    const root = createTrackedFixture();
+    mkdirSync(join(root, "src", "main", "kotlin"), { recursive: true });
+    writeFileSync(join(root, "build.gradle.kts"), "explicitApi()\n");
+    writeFileSync(join(root, "src", "main", "kotlin", "Create.kt"), source);
+    const gitAdd = spawnSync("git", ["add", "build.gradle.kts", "src"], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(gitAdd.status, 0, gitAdd.stderr);
+    const result = runFixtureScript(
+      root,
+      `context.assertKotlinSourcePolicy(${JSON.stringify({
+        roots: ["src"],
+        configuration: {
+          files: [{ path: "build.gradle.kts", required: ["explicitApi()"] }],
+        },
+        verification: verificationPolicy(["format", "static-analysis", "compile", "test"]),
+      })});`,
+    );
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, expected);
+  }
+});
+
+test("language verification policies require every native-tooling role", () => {
+  const root = createTrackedFixture();
+  mkdirSync(join(root, "src"), { recursive: true });
+  writeFileSync(join(root, "tsconfig.json"), `${JSON.stringify(typeScriptConfiguration)}\n`);
+  writeFileSync(join(root, "src", "create.ts"), "export type Created = Readonly<{}>;\n");
+  const gitAdd = spawnSync("git", ["add", "tsconfig.json", "src/create.ts"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const result = runFixtureScript(
+    root,
+    `context.assertTypeScriptSourcePolicy(${JSON.stringify({
+      roots: ["src"],
+      tsconfigPaths: ["tsconfig.json"],
+      staticAnalysis: typeScriptStaticAnalysis,
+      verification: verificationPolicy(["typecheck", "lint"]),
+    })});`,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /missing the test role/u);
+});
+
+test("cross-language source limits preserve the 500 and 800 line ceilings", () => {
+  const root = createTrackedFixture();
+  mkdirSync(join(root, "src"), { recursive: true });
+  writeFileSync(join(root, "tsconfig.json"), `${JSON.stringify(typeScriptConfiguration)}\n`);
+  writeFileSync(join(root, "src", "create.ts"), "type Value = number;\n".repeat(501));
+  writeFileSync(join(root, "src", "create.test.ts"), "type Value = number;\n".repeat(800));
+  const gitAdd = spawnSync("git", ["add", "tsconfig.json", "src"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const policy = {
+    roots: ["src"],
+    tsconfigPaths: ["tsconfig.json"],
+    staticAnalysis: typeScriptStaticAnalysis,
+    verification: verificationPolicy(["typecheck", "lint", "test"]),
+  };
+  let result = runFixtureScript(
+    root,
+    `context.assertTypeScriptSourcePolicy(${JSON.stringify(policy)});`,
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /create\.ts has 501 lines, exceeding its hard limit 500/u);
+
+  writeFileSync(join(root, "src", "create.ts"), "export type Value = number;\n");
+  writeFileSync(join(root, "src", "create.test.ts"), "type Value = number;\n".repeat(801));
+  result = runFixtureScript(
+    root,
+    `context.assertTypeScriptSourcePolicy(${JSON.stringify(policy)});`,
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /create\.test\.ts has 801 lines, exceeding its hard limit 800/u);
+});
+
+test("cross-language baselines shrink and generated source stays explicitly excluded", () => {
+  const root = createTrackedFixture();
+  mkdirSync(join(root, "src", "generated"), { recursive: true });
+  mkdirSync(join(root, "scripts", "policy"), { recursive: true });
+  writeFileSync(join(root, "tsconfig.json"), `${JSON.stringify(typeScriptConfiguration)}\n`);
+  writeFileSync(join(root, "src", "legacy.ts"), "type Value = number;\n".repeat(6));
+  writeFileSync(join(root, "src", "generated", "unsafe.ts"), "export const value: any = 1;\n");
+  writeFileSync(
+    join(root, "scripts", "policy", "typescript-size-baseline.tsv"),
+    "src/legacy.ts\t6\n",
+  );
+  const gitAdd = spawnSync("git", ["add", "tsconfig.json", "src", "scripts/policy"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const policy = {
+    roots: ["src"],
+    generatedPrefixes: ["src/generated"],
+    baselinePath: "scripts/policy/typescript-size-baseline.tsv",
+    productionTargetLines: 5,
+    productionHardLines: 10,
+    testTargetLines: 8,
+    testHardLines: 12,
+    facadeHardLines: 10,
+    tsconfigPaths: ["tsconfig.json"],
+    staticAnalysis: typeScriptStaticAnalysis,
+    verification: verificationPolicy(["typecheck", "lint", "test"]),
+  };
+  const context = createContext(root);
+  context.assertTypeScriptSourcePolicy(policy);
+
+  writeFileSync(join(root, "src", "legacy.ts"), "type Value = number;\n".repeat(7));
+  const result = runFixtureScript(
+    root,
+    `context.assertTypeScriptSourcePolicy(${JSON.stringify(policy)});`,
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /legacy\.ts grew from its baseline 6 to 7 lines/u);
+});
+
+test("Swift and Kotlin facade policies reject substantive configured entrypoints", () => {
+  const cases = [
+    {
+      language: "Swift",
+      configurationPath: "Package.swift",
+      configurationText: "// StrictConcurrency\n",
+      sourcePath: "Sources/Identity/Exports.swift",
+      source: "public func create() {}\n",
+      body: (verification) => `context.assertSwiftSourcePolicy({
+  roots: ["Sources"],
+  facadeFiles: ["Sources/Identity/Exports.swift"],
+  configuration: { files: [{ path: "Package.swift", required: ["StrictConcurrency"] }] },
+  verification: ${JSON.stringify(verification)},
+});`,
+      expected: /declaration-and-re-export-only Swift facade/u,
+      roles: ["format", "lint", "build", "test"],
+    },
+    {
+      language: "Kotlin",
+      configurationPath: "build.gradle.kts",
+      configurationText: "explicitApi()\n",
+      sourcePath: "src/main/kotlin/Identity.kt",
+      source: "public fun create() = Unit\n",
+      body: (verification) => `context.assertKotlinSourcePolicy({
+  roots: ["src"],
+  facadeFiles: ["src/main/kotlin/Identity.kt"],
+  configuration: { files: [{ path: "build.gradle.kts", required: ["explicitApi()"] }] },
+  verification: ${JSON.stringify(verification)},
+});`,
+      expected: /declaration-and-re-export-only Kotlin facade/u,
+      roles: ["format", "static-analysis", "compile", "test"],
+    },
+  ];
+  for (const entry of cases) {
+    const root = createTrackedFixture();
+    mkdirSync(join(root, entry.sourcePath, ".."), { recursive: true });
+    writeFileSync(join(root, entry.configurationPath), entry.configurationText);
+    writeFileSync(join(root, entry.sourcePath), entry.source);
+    const gitAdd = spawnSync("git", ["add", entry.configurationPath, entry.sourcePath], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(gitAdd.status, 0, gitAdd.stderr);
+    const result = runFixtureScript(
+      root,
+      entry.body(verificationPolicy(entry.roles)),
+    );
+
+    assert.equal(result.status, 1, entry.language);
+    assert.match(result.stderr, entry.expected);
+  }
+});
+
+test("language source policies ignore forbidden tokens inside string literals", () => {
+  const root = createTrackedFixture();
+  mkdirSync(join(root, "typescript"), { recursive: true });
+  mkdirSync(join(root, "swift"), { recursive: true });
+  mkdirSync(join(root, "kotlin"), { recursive: true });
+  writeFileSync(join(root, "tsconfig.json"), `${JSON.stringify(typeScriptConfiguration)}\n`);
+  writeFileSync(
+    join(root, "typescript", "create.ts"),
+    'export const marker = "// @ts-ignore any throw new Error";\n',
+  );
+  writeFileSync(join(root, "Package.swift"), "// StrictConcurrency\n");
+  writeFileSync(
+    join(root, "swift", "create.swift"),
+    'let marker = "// swiftlint:disable all try! fatalError()"\n',
+  );
+  writeFileSync(join(root, "build.gradle.kts"), "explicitApi()\n");
+  writeFileSync(
+    join(root, "kotlin", "Create.kt"),
+    'val marker = "@Suppress !! error() RuntimeException()"\n',
+  );
+  const gitAdd = spawnSync(
+    "git",
+    ["add", "tsconfig.json", "Package.swift", "build.gradle.kts", "typescript", "swift", "kotlin"],
+    { cwd: root, encoding: "utf8" },
+  );
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const context = createContext(root);
+
+  context.assertTypeScriptSourcePolicy({
+    roots: ["typescript"],
+    tsconfigPaths: ["tsconfig.json"],
+    staticAnalysis: typeScriptStaticAnalysis,
+    verification: verificationPolicy(["typecheck", "lint", "test"]),
+  });
+  context.assertSwiftSourcePolicy({
+    roots: ["swift"],
+    configuration: {
+      files: [{ path: "Package.swift", required: ["StrictConcurrency"] }],
+    },
+    verification: verificationPolicy(["format", "lint", "build", "test"]),
+  });
+  context.assertKotlinSourcePolicy({
+    roots: ["kotlin"],
+    configuration: {
+      files: [{ path: "build.gradle.kts", required: ["explicitApi()"] }],
+    },
+    verification: verificationPolicy(["format", "static-analysis", "compile", "test"]),
+  });
 });
 
 test("protobuf contract accepts sparse stable identifiers and rejects reserved reuse", () => {
@@ -1707,7 +2909,7 @@ test("vendored core policy rejects assertions hidden in strings", () => {
   const root = createTrackedFixture();
   writeFileSync(
     join(root, "scripts", "release-readiness", "core.mjs"),
-    `export const RELEASE_READINESS_CORE_CONTRACT_VERSION = 10;
+    `export const RELEASE_READINESS_CORE_CONTRACT_VERSION = 11;
 const assertReallyMeVendoredCorePolicy = () => {
   "assertGeneratedArtifactsFresh";
   "assertGeneratedProtoHardeningPolicy";
@@ -1716,6 +2918,11 @@ const assertReallyMeVendoredCorePolicy = () => {
   "assertReallyMeRustProtoRepositoryPolicy";
   "assertCargoMetadataPolicy";
   "assertCargoWorkspacePolicy";
+  "assertRepositoryShapePolicy";
+  "assertRustSourcePolicy";
+  "assertTypeScriptSourcePolicy";
+  "assertSwiftSourcePolicy";
+  "assertKotlinSourcePolicy";
   "assertTextPolicy";
   "assertSpdxHeaders";
   "assertWorkflowActionsPinned";
@@ -1744,6 +2951,19 @@ export { assertReallyMeVendoredCorePolicy };
     result.stderr,
     /scripts\/release-readiness\/core\.mjs must define assertGeneratedArtifactsFresh/u,
   );
+});
+
+test("vendored core policy accepts the complete current core", () => {
+  const root = createTrackedFixture();
+  const result = runTrackedFixtureScript(
+    root,
+    `context.assertReallyMeVendoredCorePolicy({
+  scriptPath: "scripts/release-readiness/core.mjs",
+  corePath: "scripts/release-readiness/core.mjs",
+});`,
+  );
+
+  assert.equal(result.status, 0, result.stderr);
 });
 
 test("generated hardening handles indented messages and single-quoted options", () => {

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
 //
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { createReleaseReadinessContext } from "./release-readiness/core.mjs";
 
@@ -45,16 +45,145 @@ const repositoryPolicy = {
     requirePublishInclude: true,
     validatePublishablePathDependencies: true,
   },
+  // Opt in after mapping the repository against docs/repository-shapes.md.
+  // repositoryShape: {
+  //   archetype: "protocol-engine",
+  //   requiredLanes: ["crates", "contracts", "docs", "scripts", ".github"],
+  //   optionalLanes: ["bindings", "gen", "conformance", "vectors", "fuzz", "examples"],
+  //   exceptions: [],
+  //   crates: [
+  //     { path: "crates/REPLACE_DOMAIN_CRATE", role: "domain" },
+  //     { path: "crates/proto", role: "proto" },
+  //     { path: "crates/proto-codec", role: "proto-codec" },
+  //   ],
+  //   subLanes: {
+  //     bindings: ["ffi", "jni", "wasm"],
+  //     gen: ["swift", "kotlin", "java", "typescript"],
+  //   },
+  //   forbiddenPaths: [],
+  //   requireReleaseReadiness: true,
+  // },
   cargoMetadata: {
     reallyMeLatestStableDependencies: true,
   },
+  rustSource: {
+    // Govern every tracked Rust source file, including conformance, fuzz,
+    // examples, bindings, and workspace crates.
+    roots: ["."],
+    generatedPrefixes: ["REPLACE_GENERATED_RUST_DIRECTORY"],
+    // A repository may set targets below the 500-line hard ceiling and use a
+    // tracked TSV for existing files between that target and the ceiling. Each
+    // entry is path<TAB>line-count and may shrink, but may never grow.
+    baselinePath: null,
+    productionTargetLines: 500,
+    productionHardLines: 500,
+    testTargetLines: 800,
+    testHardLines: 800,
+    moduleHardLines: 100,
+    forbidWildcardImports: true,
+    forbidInlineTests: true,
+    forbidSubstantiveFacades: true,
+    forbidPanickingProductionCode: true,
+    forbidDynamicErrorSurfaces: true,
+  },
+  // Enable each policy when the repository contains authored source in that
+  // language. Generated bindings belong in generatedPrefixes, never roots-only
+  // exceptions. One native command may cover multiple verification roles.
+  // typescriptSource: {
+  //   roots: ["packages/ts/src", "packages/ts/tests"],
+  //   generatedPrefixes: ["gen/typescript"],
+  //   tsconfigPaths: ["packages/ts/tsconfig.json"],
+  //   staticAnalysis: {
+  //     files: [
+  //       {
+  //         path: "eslint.config.mjs",
+  //         required: [
+  //           "@typescript-eslint/no-explicit-any",
+  //           "@typescript-eslint/ban-ts-comment",
+  //           "@typescript-eslint/consistent-type-assertions",
+  //           "@typescript-eslint/no-non-null-assertion",
+  //           "@typescript-eslint/only-throw-error",
+  //         ],
+  //       },
+  //     ],
+  //   },
+  //   verification: [
+  //     {
+  //       roles: ["typecheck", "lint", "test"],
+  //       command: "npm",
+  //       args: ["run", "check"],
+  //     },
+  //   ],
+  // },
+  // swiftSource: {
+  //   roots: ["packages/swift/Sources", "packages/swift/Tests"],
+  //   generatedPrefixes: ["gen/swift"],
+  //   facadeFiles: ["packages/swift/Sources/ReallyMeIdentity/Exports.swift"],
+  //   configuration: {
+  //     files: [
+  //       {
+  //         path: "Package.swift",
+  //         required: ["StrictConcurrency", "warnings-as-errors"],
+  //       },
+  //     ],
+  //   },
+  //   verification: [
+  //     {
+  //       roles: ["format", "lint", "build", "test"],
+  //       command: "scripts/check-swift.sh",
+  //       args: [],
+  //     },
+  //   ],
+  // },
+  // kotlinSource: {
+  //   roots: ["packages/kotlin/src"],
+  //   generatedPrefixes: ["gen/kotlin", "gen/java"],
+  //   facadeFiles: ["packages/kotlin/src/commonMain/kotlin/Identity.kt"],
+  //   configuration: {
+  //     files: [
+  //       {
+  //         path: "packages/kotlin/build.gradle.kts",
+  //         required: ["explicitApi()", "allWarningsAsErrors = true"],
+  //       },
+  //     ],
+  //   },
+  //   verification: [
+  //     {
+  //       roles: ["format", "static-analysis", "compile", "test"],
+  //       command: "./gradlew",
+  //       args: ["check"],
+  //       options: { cwd: "packages/kotlin" },
+  //     },
+  //   ],
+  // },
   spdx: {
-    excludedPrefixes: [
-      "target",
-      "gen",
-      "REPLACE_GENERATED_RUST_DIRECTORY",
-      "REPLACE_GENERATED_TYPESCRIPT_DIRECTORY",
+    extensions: [
+      ".cjs",
+      ".cts",
+      ".js",
+      ".jsx",
+      ".kt",
+      ".kts",
+      ".md",
+      ".mjs",
+      ".mts",
+      ".proto",
+      ".py",
+      ".rs",
+      ".sh",
+      ".swift",
+      ".toml",
+      ".ts",
+      ".tsx",
+      ".yaml",
+      ".yml",
     ],
+    exclusions: [
+      { path: "REPLACE_GENERATED_RUST_DIRECTORY", reason: "generated" },
+      { path: "REPLACE_GENERATED_TYPESCRIPT_DIRECTORY", reason: "generated" },
+    ],
+    requireExclusionsMatched: true,
+    requireExclusionReasons: true,
   },
   protobufBoundary: {
     protoPath: "REPLACE_PROTO_PATH",

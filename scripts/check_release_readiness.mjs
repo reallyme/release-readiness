@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
 //
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { createReleaseReadinessContext } from "../core.mjs";
 
@@ -9,6 +9,7 @@ const {
   assertContains,
   assertNodeWorkflowJobsPinNode,
   assertNotContains,
+  assertRepositoryShapePolicy,
   assertSpdxHeaders,
   assertWorkflowActionsPinned,
   assertWorkflowRunStep,
@@ -24,11 +25,24 @@ const packageJson = readJson("package.json");
 if (packageJson.name !== "@reallyme/release-readiness") {
   fail("package name must remain @reallyme/release-readiness");
 }
-if (packageJson.license !== "Apache-2.0") {
-  fail("package license must remain Apache-2.0");
+if (packageJson.license !== "MIT OR Apache-2.0") {
+  fail("package license must remain MIT OR Apache-2.0");
 }
-if (packageJson.version !== "0.4.0") {
-  fail("package version must remain 0.4.0 for this release");
+if (packageJson.version !== "0.5.0") {
+  fail("package version must remain 0.5.0 for this release");
+}
+if (
+  JSON.stringify(packageJson.files) !==
+  JSON.stringify([
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "core.mjs",
+    "docs/",
+    "scripts/run-consumer-check.mjs",
+    "templates/",
+  ])
+) {
+  fail("package files must remain an explicit release-runtime allowlist");
 }
 for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]) {
   if (packageJson[field] !== undefined && Object.keys(packageJson[field]).length !== 0) {
@@ -36,7 +50,7 @@ for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]
   }
 }
 
-assertContains("core.mjs", "RELEASE_READINESS_CORE_CONTRACT_VERSION = 10");
+assertContains("core.mjs", "RELEASE_READINESS_CORE_CONTRACT_VERSION = 11");
 assertContains("package.json", '"reallyme-release-readiness": "scripts/run-consumer-check.mjs"');
 assertContains("scripts/run-consumer-check.mjs", "timingSafeEqual");
 assertContains("scripts/run-consumer-check.mjs", "shared core does not match the pinned package");
@@ -44,6 +58,15 @@ assertContains("scripts/run-consumer-check.mjs", "MAX_SHARED_CORE_BYTES");
 assertContains("README.md", "github:reallyme/release-readiness#FULL_COMMIT_SHA");
 assertNotContains("README.md", "release-readiness#main");
 assertContains("README.md", "Latest stable registry requirements");
+assertContains("README.md", "assertTypeScriptSourcePolicy");
+assertContains("README.md", "assertSwiftSourcePolicy");
+assertContains("README.md", "assertKotlinSourcePolicy");
+assertContains("README.md", "docs/repository-shapes.md");
+assertContains("docs/repository-shapes.md", "consistent directory grammar");
+assertContains(
+  "docs/repository-shapes.md",
+  "cannot decide whether a conversion boundary",
+);
 assertContains("core.mjs", "assertGeneratedArtifactsFresh");
 assertContains("core.mjs", "assertGeneratedProtoHardeningPolicy");
 assertContains("core.mjs", "assertReallyMeProtobufReleasePolicy");
@@ -56,6 +79,11 @@ assertContains("core.mjs", "assertReallyMeVendoredCorePolicy");
 assertContains("core.mjs", "assertReallyMeRustProtoRepositoryPolicy");
 assertContains("core.mjs", "assertCargoMetadataPolicy");
 assertContains("core.mjs", "assertCargoWorkspacePolicy");
+assertContains("core.mjs", "assertRepositoryShapePolicy");
+assertContains("core.mjs", "assertRustSourcePolicy");
+assertContains("core.mjs", "assertTypeScriptSourcePolicy");
+assertContains("core.mjs", "assertSwiftSourcePolicy");
+assertContains("core.mjs", "assertKotlinSourcePolicy");
 assertContains("core.mjs", "assertTextPolicy");
 assertContains("core.mjs", "assertWorkflowActionsPinned");
 assertContains("core.mjs", "assertWorkflowPolicy");
@@ -83,11 +111,13 @@ assertContains("core.mjs", "assertLockPackageVersion");
 assertContains("core.mjs", "assertPackageFiles");
 assertContains("core.mjs", "corepack");
 assertContains("core.mjs", "requiredInstallSteps");
-assertContains("LICENSE", "Apache License");
-assertContains("LICENSE", "Version 2.0, January 2004");
+assertContains("LICENSE-APACHE", "Apache License");
+assertContains("LICENSE-APACHE", "Version 2.0, January 2004");
+assertContains("LICENSE-MIT", "MIT License");
+assertContains("LICENSE-MIT", "Copyright (c) 2026 ReallyMe LLC");
 assertContains(
   ".github/workflows/checks.yml",
-  "SPDX-License-Identifier: Apache-2.0",
+  "SPDX-License-Identifier: MIT OR Apache-2.0",
 );
 assertContains(
   ".github/workflows/checks.yml",
@@ -99,7 +129,7 @@ assertContains("README.md", "retired-path enforcement");
 assertContains("README.md", "buf generate");
 assertContains("README.md", "harden-generated-example-proto.mjs");
 assertContains("README.md", "actions/workflows/checks.yml/badge.svg");
-assertContains("README.md", "RELEASE_READINESS_CORE_CONTRACT_VERSION = 10");
+assertContains("README.md", "RELEASE_READINESS_CORE_CONTRACT_VERSION = 11");
 assertContains("core.mjs", "scalarFieldClassifications");
 assertContains("core.mjs", "unclassified protobuf scalar field");
 assertContains("templates/check_release_readiness.mjs", "scalarFieldClassifications");
@@ -127,6 +157,36 @@ assertContains(
   "templates/check_release_readiness.mjs",
   "reallyMeLatestStableDependencies: true",
 );
+assertContains("templates/check_release_readiness.mjs", "rustSource: {");
+assertContains("templates/check_release_readiness.mjs", "repositoryShape: {");
+assertContains("templates/check_release_readiness.mjs", 'archetype: "protocol-engine"');
+assertContains("templates/check_release_readiness.mjs", "typescriptSource: {");
+assertContains("templates/check_release_readiness.mjs", "swiftSource: {");
+assertContains("templates/check_release_readiness.mjs", "kotlinSource: {");
+assertContains("templates/check_release_readiness.mjs", "staticAnalysis: {");
+assertContains(
+  "templates/check_release_readiness.mjs",
+  '"@typescript-eslint/consistent-type-assertions"',
+);
+assertContains("templates/check_release_readiness.mjs", 'roots: ["."]');
+assertContains("templates/check_release_readiness.mjs", "productionHardLines: 500");
+assertContains("templates/check_release_readiness.mjs", "testTargetLines: 800");
+assertContains("templates/check_release_readiness.mjs", "testHardLines: 800");
+assertContains("templates/check_release_readiness.mjs", "forbidInlineTests: true");
+assertContains("templates/check_release_readiness.mjs", "forbidSubstantiveFacades: true");
+assertContains("templates/check_release_readiness.mjs", "forbidPanickingProductionCode: true");
+assertContains("templates/check_release_readiness.mjs", "forbidDynamicErrorSurfaces: true");
+assertContains("templates/check_release_readiness.mjs", 'roles: ["typecheck", "lint", "test"]');
+assertContains(
+  "templates/check_release_readiness.mjs",
+  'roles: ["format", "lint", "build", "test"]',
+);
+assertContains(
+  "templates/check_release_readiness.mjs",
+  'roles: ["format", "static-analysis", "compile", "test"]',
+);
+assertContains("templates/check_release_readiness.mjs", "requireExclusionsMatched: true");
+assertContains("templates/check_release_readiness.mjs", "requireExclusionReasons: true");
 assertContains("templates/check_release_readiness.mjs", "granularProviderBoundary");
 assertContains("templates/check_release_readiness.mjs", "operations: [");
 assertContains("templates/check_release_readiness.mjs", "retiredPaths: []");
@@ -161,4 +221,14 @@ assertWorkflowRunStep(
   "Run release readiness checks",
   "npm run check",
 );
+assertRepositoryShapePolicy({
+  archetype: "tooling",
+  requiredLanes: ["docs", "scripts", ".github"],
+  optionalLanes: ["templates", "test"],
+  exceptions: [],
+  crates: [],
+  subLanes: {},
+  forbiddenPaths: [],
+  requireReleaseReadiness: false,
+});
 assertSpdxHeaders();

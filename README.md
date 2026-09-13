@@ -1,7 +1,7 @@
 <!--
 SPDX-FileCopyrightText: Copyright © 2026 ReallyMe LLC. All rights reserved
 
-SPDX-License-Identifier: Apache-2.0
+SPDX-License-Identifier: MIT OR Apache-2.0
 -->
 
 # ReallyMe Release Readiness
@@ -21,12 +21,24 @@ runner so policy fixes do not remain trapped in stale local copies.
 - GitHub Actions pinned to full commit SHAs, with Node jobs pinned to Node 24.
 - Workflow permissions matched structurally at the workflow and job scopes, and
   release-critical named steps matched as complete commands rather than loose
-  substrings.
+  substrings. Repeated step names can be scoped by job.
 - Latest stable registry requirements for ReallyMe Crypto, Codec, JOSE, and
   COSE dependencies when they appear in Cargo metadata.
 - Cargo workspace metadata, package surfaces, dependency sources, and publish
   policy.
-- SPDX headers for tracked source files.
+- Rust source structure: hard limits for module and implementation size,
+  shrinking-only baselines for existing debt, thin facades, separate tests,
+  typed error surfaces, no production panic shortcuts, and no wildcard imports
+  or re-exports.
+- TypeScript, Swift, and Kotlin source structure: the same 500-line production
+  and 800-line separate-test ceilings, shrinking-only baselines, thin declared
+  facades, language-specific unsafe-operation checks, and mandatory native
+  verification roles.
+- Opt-in repository-shape contracts with approved archetypes, declared root
+  lanes and sublanes, explicit Cargo crate roles, canonical proto ownership,
+  and typed exceptional roots.
+- SPDX headers for tracked source files, with typed generated/vendored/
+  third-party exclusions that can be required to match current tracked files.
 - Protobuf schema contracts, generated output freshness, and adapter boundary
   checks.
 - Granular provider contracts with exact descriptor/request/result/error/response
@@ -45,7 +57,7 @@ The current vendored-core contract marker is:
 ```js
 assertContains(
   "scripts/release-readiness/core.mjs",
-  "RELEASE_READINESS_CORE_CONTRACT_VERSION = 10",
+  "RELEASE_READINESS_CORE_CONTRACT_VERSION = 11",
 );
 ```
 
@@ -92,6 +104,77 @@ Hardening scripts must also support `--check-idempotent`; repository checkers
 run that mode against checked-in output so a second pass cannot accumulate
 comments, derives, debug implementations, or drop implementations.
 
+For authored Rust, configure `assertRustSourcePolicy` (or the aggregate
+`rustSource` policy) with the source roots and generated-source exclusions. Use
+`roots: ["."]` to govern every tracked Rust source throughout the repository. The
+default hard ceiling is 500 lines for production code and examples. Separate
+test files may contain up to 800 lines; test implementations inside production
+source are rejected. A production module may declare a separate test module
+with `#[cfg(test)] mod tests;`. A repository may choose a lower target and
+record existing files between that target and the applicable hard ceiling in a
+tracked TSV as `path<TAB>line-count`. That allowance can only stay equal or
+decrease and never overrides the applicable ceiling. Remove the entry once the
+file reaches its target.
+
+As a human-review convention, prefer action-named implementation files such as
+`create.rs`, `evaluate.ts`, `sign.swift`, and `verify.kt`. This is intentionally
+not enforced by the checker because whether a name expresses the repository's
+domain operation requires architectural judgment.
+
+For authored TypeScript, use `assertTypeScriptSourcePolicy`. It governs `.ts`,
+`.tsx`, `.mts`, and `.cts`; requires explicit strict compiler settings in every
+declared `tsconfig`; rejects `any`, `@ts-ignore`, ESLint disable directives,
+wildcard imports or exports, production test bodies, non-null assertions,
+`as any`/`as unknown`/`as never`, generic thrown errors, and substantive
+`index.*` facades. `@ts-expect-error` is permitted only in separate test files
+and must include a reason. A non-empty static-analysis configuration policy must
+pin the repository's AST-aware lint rules. Verification commands must cover
+`typecheck`, `lint`, and `test`.
+
+For authored Swift, use `assertSwiftSourcePolicy`. It rejects force unwraps,
+`try!`, `as!`, terminating shortcuts, embedded XCTest implementations, generic
+error surfaces, untyped `throws`, SwiftLint disable directives, and concurrency
+escape hatches. Facade files are explicit because Swift has no universal module
+facade filename. Its configuration text policy must prove repository-specific
+strict-concurrency and warnings-as-errors settings, while verification commands
+must cover `format`, `lint`, `build`, and `test`.
+
+For authored Kotlin, use `assertKotlinSourcePolicy`. It rejects `!!`, unsafe
+casts, generic exceptions, terminating validation shortcuts, `lateinit`,
+`@Suppress`, wildcard imports, and embedded test implementations. Facade files
+are explicit. Its configuration text policy must prove settings such as
+explicit API mode and warnings-as-errors, while verification commands must
+cover `format`, `static-analysis`, `compile`, and `test`.
+
+One verification command may satisfy multiple roles when a repository-native
+command performs all of them. Generated source must be excluded explicitly;
+authored examples remain production code. Semantic requirements that cannot be
+proved safely from source text—boundary-schema validation, correct branded-type
+selection, PII-safe error context, and effective secret zeroization—remain
+repository-specific compiler/linter rules and tests invoked by those mandatory
+verification commands.
+
+Repository layout can be checked with `assertRepositoryShapePolicy`, either
+directly or through the optional aggregate `repositoryShape` field. The policy
+does not infer an archetype or require unused directories. See
+[`docs/repository-shapes.md`](docs/repository-shapes.md) for every accepted
+archetype, directory lane, invariant, crate role, and the architectural limits
+of automated `proto-codec` validation.
+
+SPDX exceptions should use typed entries such as
+`{ path: "gen", reason: "generated" }`. Enable both
+`requireExclusionsMatched` and `requireExclusionReasons` so deleted directories
+cannot leave silent, stale policy exceptions behind.
+
+The default SPDX policy expects ReallyMe's `MIT OR Apache-2.0` header. This
+default does not choose or change a consumer repository's license. Repositories
+belonging to another organization, or ReallyMe repositories using different
+terms, must pass their own exact `copyright` and `license` values to
+`assertSpdxHeaders` and maintain the corresponding license files. The vendored
+`core.mjs` remains ReallyMe-authored, dual-licensed code: preserve its header
+and third-party notice, and exclude that exact vendored path with reason
+`"vendored"` instead of restamping it with the consumer's attribution.
+
 ## Protobuf Notes
 
 Protobuf identifiers are ReallyMe wire identifiers, not provider registry
@@ -115,7 +198,8 @@ envelope from both paths.
 
 ## License
 
-Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
+Licensed under either the [MIT License](LICENSE-MIT) or the
+[Apache License, Version 2.0](LICENSE-APACHE), at your option.
 
 ## Copyright and Trademarks
 
