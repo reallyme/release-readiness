@@ -79,4 +79,6 @@ If a repository chooses a target below an applicable hard ceiling, it may set
 non-comment line must be `path<TAB>line-count`; the checked file may remain
 equal or shrink, but it may not grow or exceed 500 production/example lines or
 800 separate-test lines. Delete each entry as soon as its file reaches the
-configured target.
+configured target. These ceilings cannot be raised by consumer configuration.
+Every tracked source file must be governed by the corresponding language policy
+or excluded through a matching `gen` or `generated` source prefix.

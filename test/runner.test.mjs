@@ -28,6 +28,10 @@ const createConsumer = () => {
     join(root, "scripts", "check_release_readiness.mjs"),
     "process.exit(0);\n",
   );
+  const gitInit = spawnSync("git", ["init", "--quiet"], { cwd: root, encoding: "utf8" });
+  assert.equal(gitInit.status, 0, gitInit.stderr);
+  const gitAdd = spawnSync("git", ["add", "."], { cwd: root, encoding: "utf8" });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
   return root;
 };
 
@@ -63,4 +67,38 @@ test("runner rejects a symlinked consumer checker", () => {
   const result = runConsumer(root);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /consumer checker must be a regular file/u);
+});
+
+test("runner requires the shared policy for every tracked source language", () => {
+  const root = createConsumer();
+  writeFileSync(join(root, "implementation.rs"), "pub fn create() {}\n");
+  const gitAdd = spawnSync("git", ["add", "implementation.rs"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+
+  const result = runConsumer(root);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /did not enforce the shared rust source policy/u);
+});
+
+test("runner accepts a successfully enforced shared source policy", () => {
+  const root = createConsumer();
+  writeFileSync(join(root, "implementation.rs"), "pub fn create() {}\n");
+  writeFileSync(
+    join(root, "scripts", "check_release_readiness.mjs"),
+    `import { createReleaseReadinessContext } from "./release-readiness/core.mjs";
+const context = createReleaseReadinessContext({
+  scriptUrl: import.meta.url,
+  requireTrackedFiles: true,
+});
+context.assertRustSourcePolicy();
+`,
+  );
+  const gitAdd = spawnSync("git", ["add", "."], { cwd: root, encoding: "utf8" });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+
+  const result = runConsumer(root);
+  assert.equal(result.status, 0, result.stderr);
 });

@@ -120,6 +120,73 @@ const protocolShapePolicy = {
   requireReleaseReadiness: true,
 };
 
+const createPlatformWorkspaceShapeFixture = () => {
+  const root = createFixture();
+  for (const directory of [
+    "apps/example/contract/proto",
+    "conformance",
+    "crates/platform",
+    "docs",
+    "kits/app",
+    "scripts/release-readiness",
+    "servers/example",
+    "workers/example",
+  ]) {
+    mkdirSync(join(root, directory), { recursive: true });
+  }
+  copyFileSync(
+    new URL("../core.mjs", import.meta.url),
+    join(root, "scripts", "release-readiness", "core.mjs"),
+  );
+  writeFileSync(join(root, "Cargo.toml"), "[workspace]\nmembers = []\n");
+  writeFileSync(join(root, "apps", "example", "README.md"), "example app\n");
+  writeFileSync(
+    join(root, "apps", "example", "contract", "proto", "example.proto"),
+    "syntax = \"proto3\";\n",
+  );
+  writeFileSync(join(root, "conformance", "README.md"), "conformance\n");
+  writeFileSync(
+    join(root, "crates", "platform", "Cargo.toml"),
+    "[package]\nname = \"platform\"\n",
+  );
+  writeFileSync(join(root, "docs", "architecture.md"), "architecture\n");
+  writeFileSync(join(root, "kits", "app", "README.md"), "app kit\n");
+  writeFileSync(join(root, "scripts", "check_release_readiness.mjs"), "export {};\n");
+  writeFileSync(join(root, "servers", "example", "README.md"), "example server\n");
+  writeFileSync(join(root, "workers", "example", "README.md"), "example worker\n");
+  const gitInit = spawnSync("git", ["init", "--quiet"], { cwd: root, encoding: "utf8" });
+  assert.equal(gitInit.status, 0, gitInit.stderr);
+  const gitAdd = spawnSync("git", ["add", "."], { cwd: root, encoding: "utf8" });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  return root;
+};
+
+const platformWorkspaceShapePolicy = {
+  archetype: "platform-workspace",
+  requiredLanes: [
+    "crates",
+    "kits",
+    "apps",
+    "servers",
+    "workers",
+    "conformance",
+    "docs",
+    "scripts",
+    ".github",
+  ],
+  optionalLanes: [],
+  exceptions: [],
+  crates: [{ path: "crates/platform", role: "support" }],
+  subLanes: {
+    apps: ["example"],
+    kits: ["app"],
+    servers: ["example"],
+    workers: ["example"],
+  },
+  forbiddenPaths: [],
+  requireReleaseReadiness: true,
+};
+
 const runFixtureScript = (root, body) =>
   spawnSync(
     process.execPath,
@@ -1027,15 +1094,15 @@ pub fn create() {}
 test("SPDX policy supports a different copyright owner and license", () => {
   const root = createTrackedFixture();
   writeFileSync(
-    join(root, "eggplant.rs"),
-    `// SPDX-FileCopyrightText: Copyright © 2026 Eggplant Labs. All rights reserved
+    join(root, "example-organization.rs"),
+    `// SPDX-FileCopyrightText: Copyright © 2026 Example Organization. All rights reserved
 //
 // SPDX-License-Identifier: AGPL-3.0-only
 
-pub fn owned_by_eggplant_labs() {}
+pub fn owned_by_example_organization() {}
 `,
   );
-  const gitAdd = spawnSync("git", ["add", "eggplant.rs"], {
+  const gitAdd = spawnSync("git", ["add", "example-organization.rs"], {
     cwd: root,
     encoding: "utf8",
   });
@@ -1049,7 +1116,7 @@ pub fn owned_by_eggplant_labs() {}
   ],
   requireExclusionsMatched: true,
   requireExclusionReasons: true,
-  copyright: "SPDX-FileCopyrightText: Copyright © 2026 Eggplant Labs. All rights reserved",
+  copyright: "SPDX-FileCopyrightText: Copyright © 2026 Example Organization. All rights reserved",
   license: "SPDX-License-Identifier: AGPL-3.0-only",
 });`,
   );
@@ -1114,6 +1181,32 @@ test("repository shape policy accepts a declared protocol-engine layout", () => 
   const context = createContext(root);
 
   context.assertRepositoryShapePolicy(protocolShapePolicy);
+});
+
+test("repository shape policy accepts a declared platform-workspace layout", () => {
+  const root = createPlatformWorkspaceShapeFixture();
+  const context = createContext(root);
+
+  context.assertRepositoryShapePolicy(platformWorkspaceShapePolicy);
+});
+
+test("platform-workspace keeps protobuf schemas inside app-owned contracts", () => {
+  const root = createPlatformWorkspaceShapeFixture();
+  const misplacedPath = "apps/example/proto/example.proto";
+  mkdirSync(join(root, misplacedPath, ".."), { recursive: true });
+  writeFileSync(join(root, misplacedPath), "syntax = \"proto3\";\n");
+  const gitAdd = spawnSync("git", ["add", misplacedPath], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const result = runFixtureScript(
+    root,
+    `context.assertRepositoryShapePolicy(${JSON.stringify(platformWorkspaceShapePolicy)});`,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /requires protobuf schemas in apps\/<app>\/contract\/proto/u);
 });
 
 test("repository shape policy rejects forbidden and undeclared root lanes", () => {
@@ -1259,6 +1352,105 @@ test("repository shape policy accepts a fully declared developer-platform layout
     exceptions: [],
     crates: [],
     subLanes,
+    forbiddenPaths: [],
+    requireReleaseReadiness: true,
+  });
+});
+
+test("repository shape policy accepts a runtime-composition layout", () => {
+  const root = createFixture();
+  for (const directory of [
+    "configs",
+    "contracts",
+    "conformance",
+    "crates/server",
+    "deploy",
+    "docs",
+    "scripts/release-readiness",
+  ]) {
+    mkdirSync(join(root, directory), { recursive: true });
+  }
+  copyFileSync(
+    new URL("../core.mjs", import.meta.url),
+    join(root, "scripts", "release-readiness", "core.mjs"),
+  );
+  writeFileSync(join(root, "Cargo.toml"), "[workspace]\nmembers = []\n");
+  writeFileSync(join(root, "configs", "server.jsonc"), "{}\n");
+  writeFileSync(join(root, "contracts", "composition.md"), "contract\n");
+  writeFileSync(join(root, "conformance", "README.md"), "conformance\n");
+  writeFileSync(join(root, "crates", "server", "Cargo.toml"), "[package]\nname = \"server\"\n");
+  writeFileSync(join(root, "deploy", "README.md"), "deployment\n");
+  writeFileSync(join(root, "docs", "architecture.md"), "architecture\n");
+  writeFileSync(join(root, "scripts", "check_release_readiness.mjs"), "export {};\n");
+  const gitInit = spawnSync("git", ["init", "--quiet"], { cwd: root, encoding: "utf8" });
+  assert.equal(gitInit.status, 0, gitInit.stderr);
+  const gitAdd = spawnSync("git", ["add", "."], { cwd: root, encoding: "utf8" });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const context = createContext(root);
+
+  context.assertRepositoryShapePolicy({
+    archetype: "runtime-composition",
+    requiredLanes: [
+      "crates",
+      "configs",
+      "deploy",
+      "contracts",
+      "conformance",
+      "docs",
+      "scripts",
+      ".github",
+    ],
+    optionalLanes: [],
+    exceptions: [],
+    crates: [{ path: "crates/server", role: "runtime" }],
+    subLanes: {},
+    forbiddenPaths: [],
+    requireReleaseReadiness: true,
+  });
+});
+
+test("repository shape policy accepts an organization-neutral infrastructure layout", () => {
+  const root = createFixture();
+  for (const directory of [
+    "configuration/ansible",
+    "deployments/containers",
+    "docs",
+    "networking/load-balancers",
+    "observability/metrics",
+    "operations/catalogs",
+    "provisioning/tofu",
+    "scripts/release-readiness",
+    "topology",
+    "tools",
+  ]) {
+    mkdirSync(join(root, directory), { recursive: true });
+    writeFileSync(join(root, directory, "README.md"), `${directory}\n`);
+  }
+  copyFileSync(
+    new URL("../core.mjs", import.meta.url),
+    join(root, "scripts", "release-readiness", "core.mjs"),
+  );
+  writeFileSync(join(root, "scripts", "check_release_readiness.mjs"), "export {};\n");
+  const gitInit = spawnSync("git", ["init", "--quiet"], { cwd: root, encoding: "utf8" });
+  assert.equal(gitInit.status, 0, gitInit.stderr);
+  const gitAdd = spawnSync("git", ["add", "."], { cwd: root, encoding: "utf8" });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const context = createContext(root);
+
+  context.assertRepositoryShapePolicy({
+    archetype: "infrastructure",
+    requiredLanes: ["deployments", "operations", "docs", "scripts", ".github"],
+    optionalLanes: [
+      "configuration",
+      "networking",
+      "observability",
+      "provisioning",
+      "topology",
+      "tools",
+    ],
+    exceptions: [],
+    crates: [],
+    subLanes: {},
     forbiddenPaths: [],
     requireReleaseReadiness: true,
   });
@@ -1447,6 +1639,65 @@ test("Rust source policy caps production and example files at 500 lines by defau
   }
 });
 
+test("Rust source policy does not allow a consumer to raise hard ceilings", () => {
+  const root = createTrackedFixture();
+  const sourcePath = "crates/example/src/create.rs";
+  mkdirSync(join(root, "crates", "example", "src"), { recursive: true });
+  writeFileSync(join(root, sourcePath), "pub fn create() {}\n");
+  const gitAdd = spawnSync("git", ["add", sourcePath], { cwd: root, encoding: "utf8" });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+
+  let result = runFixtureScript(
+    root,
+    `context.assertRustSourcePolicy({
+  roots: ["crates"],
+  productionHardLines: 501,
+});`,
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /production hard limit cannot exceed 500 lines/u);
+
+  result = runFixtureScript(
+    root,
+    `context.assertRustSourcePolicy({
+  roots: ["crates"],
+  testHardLines: 801,
+});`,
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /separate-test hard limit cannot exceed 800 lines/u);
+});
+
+test("Rust source policy rejects uncovered source and untyped generated exclusions", () => {
+  const root = createTrackedFixture();
+  mkdirSync(join(root, "crates", "example", "src"), { recursive: true });
+  mkdirSync(join(root, "outside"), { recursive: true });
+  writeFileSync(join(root, "crates", "example", "src", "create.rs"), "pub fn create() {}\n");
+  writeFileSync(join(root, "outside", "create.rs"), "pub fn create() {}\n");
+  const gitAdd = spawnSync("git", ["add", "crates", "outside"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+
+  let result = runFixtureScript(
+    root,
+    'context.assertRustSourcePolicy({ roots: ["crates"] });',
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /source roots do not govern tracked source outside\/create.rs/u);
+
+  result = runFixtureScript(
+    root,
+    `context.assertRustSourcePolicy({
+  roots: ["crates"],
+  generatedPrefixes: ["outside"],
+});`,
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /must identify a gen or generated path/u);
+});
+
 test("Rust source policy allows 800 lines only in separate test files", () => {
   const root = createTrackedFixture();
   const sourcePath = "crates/example/tests/integration.rs";
@@ -1530,6 +1781,37 @@ fn implementation_works() {}
   gitAdd = spawnSync(
     "git",
     ["add", "crates/example/src/implementation.rs", "crates/example/src/tests.rs"],
+    { cwd: root, encoding: "utf8" },
+  );
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  result = runFixtureScript(
+    root,
+    "context.assertRustSourcePolicy({ roots: [\"crates\"] });",
+  );
+  assert.equal(result.status, 0, result.stderr);
+
+  writeFileSync(
+    join(root, "crates", "example", "src", "implementation.rs"),
+    `pub fn implementation() {}
+
+#[cfg(test)]
+#[path = "implementation_tests.rs"]
+mod tests;
+`,
+  );
+  writeFileSync(
+    join(root, "crates", "example", "src", "implementation_tests.rs"),
+    `#[test]
+fn implementation_works_from_sibling_file() {}
+`,
+  );
+  gitAdd = spawnSync(
+    "git",
+    [
+      "add",
+      "crates/example/src/implementation.rs",
+      "crates/example/src/implementation_tests.rs",
+    ],
     { cwd: root, encoding: "utf8" },
   );
   assert.equal(gitAdd.status, 0, gitAdd.stderr);
@@ -1930,13 +2212,42 @@ test("cross-language source limits preserve the 500 and 800 line ceilings", () =
   assert.match(result.stderr, /create\.test\.ts has 801 lines, exceeding its hard limit 800/u);
 });
 
+test("cross-language source policies cannot raise the contract ceilings", () => {
+  const root = createTrackedFixture();
+  mkdirSync(join(root, "src"), { recursive: true });
+  writeFileSync(join(root, "tsconfig.json"), `${JSON.stringify(typeScriptConfiguration)}\n`);
+  writeFileSync(join(root, "src", "create.ts"), "export type Value = number;\n");
+  const gitAdd = spawnSync("git", ["add", "tsconfig.json", "src"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const policy = {
+    roots: ["src"],
+    productionHardLines: 501,
+    tsconfigPaths: ["tsconfig.json"],
+    staticAnalysis: typeScriptStaticAnalysis,
+    verification: verificationPolicy(["typecheck", "lint", "test"]),
+  };
+
+  const result = runFixtureScript(
+    root,
+    `context.assertTypeScriptSourcePolicy(${JSON.stringify(policy)});`,
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /production hard limit cannot exceed 500 lines/u);
+});
+
 test("cross-language baselines shrink and generated source stays explicitly excluded", () => {
   const root = createTrackedFixture();
   mkdirSync(join(root, "src", "generated"), { recursive: true });
   mkdirSync(join(root, "scripts", "policy"), { recursive: true });
   writeFileSync(join(root, "tsconfig.json"), `${JSON.stringify(typeScriptConfiguration)}\n`);
   writeFileSync(join(root, "src", "legacy.ts"), "type Value = number;\n".repeat(6));
-  writeFileSync(join(root, "src", "generated", "unsafe.ts"), "export const value: any = 1;\n");
+  writeFileSync(
+    join(root, "src", "generated", "unsafe.ts"),
+    "export const value: any = 1;\n".repeat(1_000),
+  );
   writeFileSync(
     join(root, "scripts", "policy", "typescript-size-baseline.tsv"),
     "src/legacy.ts\t6\n",
@@ -2909,7 +3220,7 @@ test("vendored core policy rejects assertions hidden in strings", () => {
   const root = createTrackedFixture();
   writeFileSync(
     join(root, "scripts", "release-readiness", "core.mjs"),
-    `export const RELEASE_READINESS_CORE_CONTRACT_VERSION = 11;
+    `export const RELEASE_READINESS_CORE_CONTRACT_VERSION = 12;
 const assertReallyMeVendoredCorePolicy = () => {
   "assertGeneratedArtifactsFresh";
   "assertGeneratedProtoHardeningPolicy";

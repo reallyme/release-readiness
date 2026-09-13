@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, realpathSync, writeSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { extname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,9 +11,11 @@ import { spawnSync } from "node:child_process";
 // This module is intentionally written as a standalone, vendorable release
 // readiness core. Sister repositories should copy it byte-for-byte or consume a
 // pinned upstream revision so release-critical checks do not drift silently.
-export const RELEASE_READINESS_CORE_CONTRACT_VERSION = 11;
+export const RELEASE_READINESS_CORE_CONTRACT_VERSION = 12;
 
 const DEFAULT_FAILURE_PREFIX = "release readiness check failed";
+const MAX_PRODUCTION_SOURCE_LINES = 500;
+const MAX_SEPARATE_TEST_SOURCE_LINES = 800;
 const DEFAULT_REALLYME_LATEST_STABLE_DEPENDENCIES = [
   "reallyme-crypto",
   "reallyme-codec",
@@ -397,6 +399,21 @@ export function createReleaseReadinessContext(options) {
   const fail = (message) => {
     console.error(`${failurePrefix}: ${message}`);
     process.exit(1);
+  };
+
+  const reportSourcePolicy = (language) => {
+    if (
+      process.env.RELEASE_READINESS_ENFORCED_CONTRACT !==
+        String(RELEASE_READINESS_CORE_CONTRACT_VERSION) ||
+      process.env.RELEASE_READINESS_SOURCE_POLICY_FD !== "3"
+    ) {
+      return;
+    }
+    try {
+      writeSync(3, `${language}\n`);
+    } catch {
+      fail(`could not report the enforced ${language} source policy`);
+    }
   };
 
   const resolveRepositoryPath = (path, description = "path") => {
@@ -1454,6 +1471,85 @@ export function createReleaseReadinessContext(options) {
           "docker",
         ],
       },
+      "platform-workspace": {
+        required: [
+          "crates",
+          "kits",
+          "apps",
+          "servers",
+          "workers",
+          "conformance",
+          "docs",
+          "scripts",
+          ".github",
+        ],
+        permitted: [
+          "crates",
+          "kits",
+          "apps",
+          "servers",
+          "workers",
+          "conformance",
+          "docs",
+          "scripts",
+          ".github",
+        ],
+      },
+      "runtime-composition": {
+        required: [
+          "crates",
+          "configs",
+          "deploy",
+          "contracts",
+          "conformance",
+          "docs",
+          "scripts",
+          ".github",
+        ],
+        permitted: [
+          "crates",
+          "configs",
+          "deploy",
+          "contracts",
+          "conformance",
+          "vectors",
+          "fuzz",
+          "examples",
+          "docs",
+          "scripts",
+          ".github",
+          ".cargo",
+          "docker",
+        ],
+      },
+      infrastructure: {
+        required: [
+          "deployments",
+          "operations",
+          "docs",
+          "scripts",
+          ".github",
+        ],
+        permitted: [
+          "topology",
+          "provisioning",
+          "configuration",
+          "deployments",
+          "networking",
+          "observability",
+          "operations",
+          "crates",
+          "tools",
+          "contracts",
+          "conformance",
+          "vectors",
+          "examples",
+          "docs",
+          "scripts",
+          ".github",
+          ".cargo",
+        ],
+      },
       "conformance-suite": {
         required: ["upstream", "plans", "adapters", "conformance", "docs", "scripts", ".github"],
         permitted: [
@@ -1617,7 +1713,14 @@ export function createReleaseReadinessContext(options) {
     if (subLanes === null || typeof subLanes !== "object" || Array.isArray(subLanes)) {
       fail("repository shape subLanes must be an object");
     }
-    const subLaneParents = new Set(["bindings", "gen", "packages"]);
+    const subLaneParents = new Set([
+      "bindings",
+      "gen",
+      "packages",
+      ...(archetype === "platform-workspace"
+        ? ["apps", "kits", "servers", "workers"]
+        : []),
+    ]);
     for (const [parent, children] of Object.entries(subLanes)) {
       if (!subLaneParents.has(parent)) {
         fail(`repository shape does not support sublane declarations for ${parent}`);
@@ -1734,14 +1837,30 @@ export function createReleaseReadinessContext(options) {
       fail("repository shape proto-codec requires a canonical proto crate");
     }
     const protoFiles = governedFiles.filter((path) => path.endsWith(".proto"));
-    if (protoFiles.length !== 0 && protoCrates.length === 0) {
+    const usesAppOwnedProto = archetype === "platform-workspace";
+    if (usesAppOwnedProto && (protoCrates.length !== 0 || protoCodecCrates.length !== 0)) {
+      fail("repository shape platform-workspace keeps protobuf ownership in app contracts");
+    }
+    if (!usesAppOwnedProto && protoFiles.length !== 0 && protoCrates.length === 0) {
       fail("repository shape found protobuf schemas without a declared canonical proto crate");
     }
     if (
+      !usesAppOwnedProto &&
       protoCrates.length === 1 &&
       protoFiles.some((path) => !pathIsInside(path, protoCrates[0][0]))
     ) {
       fail("repository shape requires every protobuf schema inside crates/proto");
+    }
+    if (
+      usesAppOwnedProto &&
+      protoFiles.some(
+        (path) =>
+          !/^apps\/[A-Za-z0-9][A-Za-z0-9_.-]*\/contract\/proto\/.+[.]proto$/u.test(path),
+      )
+    ) {
+      fail(
+        "repository shape platform-workspace requires protobuf schemas in apps/<app>/contract/proto",
+      );
     }
     if (
       governedFiles.some(
@@ -1811,6 +1930,9 @@ export function createReleaseReadinessContext(options) {
       if (typeof value !== "boolean") {
         fail(`Rust source ${name} policy must be a boolean`);
       }
+      if (!value) {
+        fail(`Rust source ${name} policy is mandatory and cannot be disabled`);
+      }
     }
     const limits = {
       productionTargetLines,
@@ -1830,6 +1952,16 @@ export function createReleaseReadinessContext(options) {
       moduleHardLines > productionHardLines
     ) {
       fail("Rust source line limits are inconsistent");
+    }
+    if (productionHardLines > MAX_PRODUCTION_SOURCE_LINES) {
+      fail(
+        `Rust production hard limit cannot exceed ${MAX_PRODUCTION_SOURCE_LINES} lines`,
+      );
+    }
+    if (testHardLines > MAX_SEPARATE_TEST_SOURCE_LINES) {
+      fail(
+        `Rust separate-test hard limit cannot exceed ${MAX_SEPARATE_TEST_SOURCE_LINES} lines`,
+      );
     }
 
     const normalizePolicyPath = (path, description, allowRepositoryRoot = false) => {
@@ -1852,19 +1984,36 @@ export function createReleaseReadinessContext(options) {
     for (const sourceRoot of normalizedRoots) {
       assertRepositoryDirectory(sourceRoot, "Rust source root");
     }
-    const sourceFiles = new Set();
-    for (const trackedPath of loadTrackedFiles()) {
-      const path = trackedPath.replaceAll("\\", "/");
-      if (
-        path.endsWith(".rs") &&
-        normalizedRoots.some(
-          (sourceRoot) => sourceRoot === "." || pathIsInside(path, sourceRoot),
-        ) &&
-        !normalizedGeneratedPrefixes.some((prefix) => pathIsInside(path, prefix))
-      ) {
-        sourceFiles.add(path);
+    const trackedRustFiles = [...loadTrackedFiles()]
+      .map((path) => path.replaceAll("\\", "/"))
+      .filter((path) => path.endsWith(".rs"));
+    for (const prefix of normalizedGeneratedPrefixes) {
+      if (!/(?:^|\/)(?:gen|generated)(?:[./_-]|\/|$)/iu.test(prefix)) {
+        fail(`Rust generated source prefix ${prefix} must identify a gen or generated path`);
+      }
+      if (!trackedRustFiles.some((path) => pathIsInside(path, prefix))) {
+        fail(`Rust generated source prefix ${prefix} does not match a tracked Rust source file`);
       }
     }
+    const uncoveredRustFiles = trackedRustFiles.filter(
+      (path) =>
+        !normalizedRoots.some(
+          (sourceRoot) => sourceRoot === "." || pathIsInside(path, sourceRoot),
+        ) &&
+        !normalizedGeneratedPrefixes.some((prefix) => pathIsInside(path, prefix)),
+    );
+    if (uncoveredRustFiles.length !== 0) {
+      fail(`Rust source roots do not govern tracked source ${uncoveredRustFiles[0]}`);
+    }
+    const sourceFiles = new Set(
+      trackedRustFiles.filter(
+        (path) =>
+          normalizedRoots.some(
+            (sourceRoot) => sourceRoot === "." || pathIsInside(path, sourceRoot),
+          ) &&
+          !normalizedGeneratedPrefixes.some((prefix) => pathIsInside(path, prefix)),
+      ),
+    );
     if (sourceFiles.size === 0) {
       fail("Rust source policy found no Rust source files");
     }
@@ -1900,7 +2049,7 @@ export function createReleaseReadinessContext(options) {
     }
 
     const wildcardImport = /^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?use\b[^;]*\*[^;]*;/mu;
-    const externalTestModule = /#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+[A-Za-z_][A-Za-z0-9_]*\s*;/gu;
+    const externalTestModule = /#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*(?:#\s*\[[^\]]+\]\s*)*(?:pub(?:\([^)]*\))?\s+)?mod\s+[A-Za-z_][A-Za-z0-9_]*\s*;/gu;
     const testConfiguration = /#\s*\[\s*cfg\s*\([^\]]*\btest\b[^\]]*\)\s*\]/u;
     const testAttribute = /#\s*\[\s*(?:[A-Za-z_][A-Za-z0-9_]*::)*test(?:\s*\([^\]]*\))?\s*\]/u;
     const substantiveFacade = /(?:^|\n)[ \t]*(?:(?:pub(?:\([^)]*\))?|async|unsafe|const|extern(?:[ \t]+"[^"]*")?)[ \t]+)*(?:fn|struct|enum|union|trait|impl|static|const)[ \t]+|(?:^|\n)[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?mod[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]*\{|(?:^|\n)[ \t]*macro_rules[ \t]*!/mu;
@@ -2039,6 +2188,7 @@ export function createReleaseReadinessContext(options) {
         fail(`${path} baseline is stale because the file is now within target ${target}`);
       }
     }
+    reportSourcePolicy("rust");
   };
 
   const assertLanguageVerificationPolicy = (language, verification, requiredRoles) => {
@@ -2091,6 +2241,7 @@ export function createReleaseReadinessContext(options) {
     extensions,
     isTestPath,
     inferredFacadePath = () => false,
+    isSourcePath = () => true,
   }) => {
     const {
       roots = ["."],
@@ -2141,6 +2292,16 @@ export function createReleaseReadinessContext(options) {
     ) {
       fail(`${language} source line limits are inconsistent`);
     }
+    if (productionHardLines > MAX_PRODUCTION_SOURCE_LINES) {
+      fail(
+        `${language} production hard limit cannot exceed ${MAX_PRODUCTION_SOURCE_LINES} lines`,
+      );
+    }
+    if (testHardLines > MAX_SEPARATE_TEST_SOURCE_LINES) {
+      fail(
+        `${language} separate-test hard limit cannot exceed ${MAX_SEPARATE_TEST_SOURCE_LINES} lines`,
+      );
+    }
 
     const normalizePath = (path, description, allowRepositoryRoot = false) => {
       const absolute = resolveRepositoryPath(path, description);
@@ -2162,11 +2323,39 @@ export function createReleaseReadinessContext(options) {
     for (const sourceRoot of normalizedRoots) {
       assertRepositoryDirectory(sourceRoot, `${language} source root`);
     }
-    const sourceFiles = [...loadTrackedFiles()]
+    const trackedLanguageFiles = [...loadTrackedFiles()]
       .map((path) => path.replaceAll("\\", "/"))
       .filter(
         (path) =>
-          extensions.some((extension) => path.endsWith(extension)) &&
+          extensions.some((extension) => path.endsWith(extension)) && isSourcePath(path),
+      );
+    for (const prefix of normalizedGeneratedPrefixes) {
+      if (!/(?:^|\/)(?:gen|generated)(?:[./_-]|\/|$)/iu.test(prefix)) {
+        fail(
+          `${language} generated source prefix ${prefix} must identify a gen or generated path`,
+        );
+      }
+      if (!trackedLanguageFiles.some((path) => pathIsInside(path, prefix))) {
+        fail(
+          `${language} generated source prefix ${prefix} does not match a tracked source file`,
+        );
+      }
+    }
+    const uncoveredLanguageFiles = trackedLanguageFiles.filter(
+      (path) =>
+        !normalizedRoots.some(
+          (sourceRoot) => sourceRoot === "." || pathIsInside(path, sourceRoot),
+        ) &&
+        !normalizedGeneratedPrefixes.some((prefix) => pathIsInside(path, prefix)),
+    );
+    if (uncoveredLanguageFiles.length !== 0) {
+      fail(
+        `${language} source roots do not govern tracked source ${uncoveredLanguageFiles[0]}`,
+      );
+    }
+    const sourceFiles = trackedLanguageFiles
+      .filter(
+        (path) =>
           normalizedRoots.some(
             (sourceRoot) => sourceRoot === "." || pathIsInside(path, sourceRoot),
           ) &&
@@ -2260,6 +2449,9 @@ export function createReleaseReadinessContext(options) {
     for (const [name, value] of Object.entries(options)) {
       if (typeof value !== "boolean") {
         fail(`${language} source ${name} policy must be a boolean`);
+      }
+      if (!value) {
+        fail(`${language} source ${name} policy is mandatory and cannot be disabled`);
       }
     }
   };
@@ -2428,6 +2620,7 @@ export function createReleaseReadinessContext(options) {
       verification,
       ["typecheck", "lint", "test"],
     );
+    reportSourcePolicy("typescript");
   };
 
   const assertSwiftSourcePolicy = (policy = {}) => {
@@ -2462,6 +2655,9 @@ export function createReleaseReadinessContext(options) {
       policy,
       extensions: [".swift"],
       isTestPath: isSwiftTest,
+      // Package.swift is a build manifest validated through configuration
+      // policy, not an implementation module subject to source layout rules.
+      isSourcePath: (path) => !/(?:^|\/)Package\.swift$/u.test(path),
     });
     const unsafeOperation = /\b(?:try|as)[ \t]*!|[A-Za-z0-9_)\]}][ \t]*!(?!=)/u;
     const crashOperation = /\b(?:fatalError|preconditionFailure|assertionFailure)[ \t\n]*\(/u;
@@ -2510,6 +2706,7 @@ export function createReleaseReadinessContext(options) {
       verification,
       ["format", "lint", "build", "test"],
     );
+    reportSourcePolicy("swift");
   };
 
   const assertKotlinSourcePolicy = (policy = {}) => {
@@ -2542,7 +2739,9 @@ export function createReleaseReadinessContext(options) {
     const state = createSourcePolicyState({
       language: "Kotlin",
       policy,
-      extensions: [".kt", ".kts"],
+      // Gradle Kotlin scripts are build configuration and are validated by the
+      // configuration policy. Authored Kotlin implementation uses .kt files.
+      extensions: [".kt"],
       isTestPath: isKotlinTest,
     });
     const wildcardImport = /(?:^|\n)[ \t]*import[ \t]+[^\n;]*\.\*[ \t]*(?:;|$)/mu;
@@ -2589,6 +2788,7 @@ export function createReleaseReadinessContext(options) {
       verification,
       ["format", "static-analysis", "compile", "test"],
     );
+    reportSourcePolicy("kotlin");
   };
 
   const snapshotDirectory = (path) => {

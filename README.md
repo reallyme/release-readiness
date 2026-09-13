@@ -36,7 +36,9 @@ runner so policy fixes do not remain trapped in stale local copies.
   verification roles.
 - Opt-in repository-shape contracts with approved archetypes, declared root
   lanes and sublanes, explicit Cargo crate roles, canonical proto ownership,
-  and typed exceptional roots.
+  and typed exceptional roots. Organization-neutral runtime-composition and
+  infrastructure profiles keep executable hosting separate from deployment
+  intent and operational control.
 - SPDX headers for tracked source files, with typed generated/vendored/
   third-party exclusions that can be required to match current tracked files.
 - Protobuf schema contracts, generated output freshness, and adapter boundary
@@ -57,7 +59,7 @@ The current vendored-core contract marker is:
 ```js
 assertContains(
   "scripts/release-readiness/core.mjs",
-  "RELEASE_READINESS_CORE_CONTRACT_VERSION = 11",
+  "RELEASE_READINESS_CORE_CONTRACT_VERSION = 12",
 );
 ```
 
@@ -89,7 +91,10 @@ npm exec --yes --package=github:reallyme/release-readiness#FULL_COMMIT_SHA -- \
 Arguments after `reallyme-release-readiness` are passed to the consumer's
 `scripts/check_release_readiness.mjs`. The runner requires the tracked vendored
 core to be byte-for-byte identical to its immutable upstream core before it
-runs the consumer checker.
+runs the consumer checker. It also detects tracked Rust, TypeScript, Swift, and
+Kotlin source and requires the consumer checker to invoke the corresponding
+shared source policy. A repository cannot bypass the source rules by omitting a
+policy call.
 
 For a new Rust/protobuf repository, start from
 [`templates/check_release_readiness.mjs`](templates/check_release_readiness.mjs)
@@ -107,14 +112,20 @@ comments, derives, debug implementations, or drop implementations.
 For authored Rust, configure `assertRustSourcePolicy` (or the aggregate
 `rustSource` policy) with the source roots and generated-source exclusions. Use
 `roots: ["."]` to govern every tracked Rust source throughout the repository. The
-default hard ceiling is 500 lines for production code and examples. Separate
-test files may contain up to 800 lines; test implementations inside production
-source are rejected. A production module may declare a separate test module
-with `#[cfg(test)] mod tests;`. A repository may choose a lower target and
-record existing files between that target and the applicable hard ceiling in a
-tracked TSV as `path<TAB>line-count`. That allowance can only stay equal or
-decrease and never overrides the applicable ceiling. Remove the entry once the
-file reaches its target.
+non-configurable hard ceiling is 500 lines for authored production code and
+examples. Separate test files may contain up to 800 lines; test implementations
+inside production source are rejected. A production module may declare a
+separate test module with `#[cfg(test)] mod tests;`. The same ceilings apply to
+authored TypeScript, Swift, and Kotlin. Every tracked source file must be covered
+by the declared roots or an explicit generated-source prefix. Generated
+exclusions must identify a `gen` or `generated` path and match tracked source;
+they are not a general-purpose exception mechanism.
+
+A repository may choose a lower target and record existing files between that
+target and the applicable hard ceiling in a tracked TSV as
+`path<TAB>line-count`. That allowance can only stay equal or decrease and never
+overrides the 500/800 ceilings. Remove the entry once the file reaches its
+target.
 
 As a human-review convention, prefer action-named implementation files such as
 `create.rs`, `evaluate.ts`, `sign.swift`, and `verify.kt`. This is intentionally

@@ -28,8 +28,8 @@ if (packageJson.name !== "@reallyme/release-readiness") {
 if (packageJson.license !== "MIT OR Apache-2.0") {
   fail("package license must remain MIT OR Apache-2.0");
 }
-if (packageJson.version !== "0.5.0") {
-  fail("package version must remain 0.5.0 for this release");
+if (packageJson.version !== "0.5.1") {
+  fail("package version must remain 0.5.1 for this release");
 }
 if (
   JSON.stringify(packageJson.files) !==
@@ -50,11 +50,13 @@ for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]
   }
 }
 
-assertContains("core.mjs", "RELEASE_READINESS_CORE_CONTRACT_VERSION = 11");
+assertContains("core.mjs", "RELEASE_READINESS_CORE_CONTRACT_VERSION = 12");
 assertContains("package.json", '"reallyme-release-readiness": "scripts/run-consumer-check.mjs"');
 assertContains("scripts/run-consumer-check.mjs", "timingSafeEqual");
 assertContains("scripts/run-consumer-check.mjs", "shared core does not match the pinned package");
 assertContains("scripts/run-consumer-check.mjs", "MAX_SHARED_CORE_BYTES");
+assertContains("scripts/run-consumer-check.mjs", "RELEASE_READINESS_ENFORCED_CONTRACT");
+assertContains("scripts/run-consumer-check.mjs", "requiredSourcePolicies");
 assertContains("README.md", "github:reallyme/release-readiness#FULL_COMMIT_SHA");
 assertNotContains("README.md", "release-readiness#main");
 assertContains("README.md", "Latest stable registry requirements");
@@ -63,6 +65,8 @@ assertContains("README.md", "assertSwiftSourcePolicy");
 assertContains("README.md", "assertKotlinSourcePolicy");
 assertContains("README.md", "docs/repository-shapes.md");
 assertContains("docs/repository-shapes.md", "consistent directory grammar");
+assertContains("docs/repository-shapes.md", '`runtime-composition`');
+assertContains("docs/repository-shapes.md", '`infrastructure`');
 assertContains(
   "docs/repository-shapes.md",
   "cannot decide whether a conversion boundary",
@@ -129,7 +133,7 @@ assertContains("README.md", "retired-path enforcement");
 assertContains("README.md", "buf generate");
 assertContains("README.md", "harden-generated-example-proto.mjs");
 assertContains("README.md", "actions/workflows/checks.yml/badge.svg");
-assertContains("README.md", "RELEASE_READINESS_CORE_CONTRACT_VERSION = 11");
+assertContains("README.md", "RELEASE_READINESS_CORE_CONTRACT_VERSION = 12");
 assertContains("core.mjs", "scalarFieldClassifications");
 assertContains("core.mjs", "unclassified protobuf scalar field");
 assertContains("templates/check_release_readiness.mjs", "scalarFieldClassifications");

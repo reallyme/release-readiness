@@ -34,9 +34,15 @@ directories.
 | `.github/` | CI and release policy |
 
 Hosted services may additionally use `services/`, `deploy/`, `migrations/`,
-`operations/`, `config/`, and `docker/`. Conformance suites may use `upstream/`,
-`plans/`, `adapters/`, `results/`, and `evidence/`. Tooling repositories may use
-`templates/`, `test/`, and `fixtures/`.
+`operations/`, `config/`, and `docker/`. Runtime-composition repositories use
+`configs/` and `deploy/`. Infrastructure repositories use capability-named
+`topology/`, `provisioning/`, `configuration/`, `deployments/`, `networking/`,
+`observability/`, and `operations/` lanes. Conformance suites may use
+`upstream/`, `plans/`, `adapters/`, `results/`, and `evidence/`. Tooling
+repositories may use `templates/`, `test/`, and `fixtures/`.
+
+These contracts are organization-neutral. Repository ownership affects the
+configured copyright and license policy, not the meaning of a directory lane.
 
 ## Approved Archetypes
 
@@ -71,6 +77,47 @@ does not pass unless it is declared as a typed exception.
 - Permitted: `crates`, `contracts`, `conformance`, `vectors`, `fuzz`,
   `examples`, `docs`, `scripts`, `.github`, `.cargo`, `services`, `deploy`,
   `migrations`, `operations`, `config`, `docker`.
+
+### `platform-workspace`
+
+- Required: `crates`, `kits`, `apps`, `servers`, `workers`, `conformance`,
+  `docs`, `scripts`, `.github`.
+- Permitted: `crates`, `kits`, `apps`, `servers`, `workers`, `conformance`,
+  `docs`, `scripts`, `.github`.
+
+This profile owns the shared Platform facade, reusable host-neutral kits,
+reference applications, native server composition, Worker composition, and
+cross-host conformance. Each application owns its protobuf schema beneath
+`apps/<app>/contract/proto`; Platform does not centralize app contracts in a
+workspace-wide `crates/proto` package.
+
+### `runtime-composition`
+
+- Required: `crates`, `configs`, `deploy`, `contracts`, `conformance`, `docs`,
+  `scripts`, `.github`.
+- Permitted: `crates`, `configs`, `deploy`, `contracts`, `conformance`,
+  `vectors`, `fuzz`, `examples`, `docs`, `scripts`, `.github`, `.cargo`,
+  `docker`.
+
+This profile owns executable composition: native process entrypoints, edge or
+Worker hosts, non-secret runtime configuration, container construction, and
+artifact-level conformance. Rust hosts remain declared packages beneath
+`crates/`; application or protocol business logic remains in its owning
+repository.
+
+### `infrastructure`
+
+- Required: `deployments`, `operations`, `docs`, `scripts`, `.github`.
+- Permitted: `topology`, `provisioning`, `configuration`, `deployments`,
+  `networking`, `observability`, `operations`, `crates`, `tools`, `contracts`,
+  `conformance`, `vectors`, `examples`, `docs`, `scripts`, `.github`, `.cargo`.
+
+This profile names capabilities rather than products. For example, OpenTofu or
+Terraform belongs beneath `provisioning/`, Ansible beneath `configuration/`,
+container deployment definitions beneath `deployments/`, provider ingress and
+load-balancer definitions beneath `networking/`, and reviewed control-plane
+catalogs beneath `operations/`. Provider and product names must not become
+profile requirements.
 
 ### `conformance-suite`
 
@@ -109,8 +156,12 @@ The checker enforces the following structural rules:
 - The conversion crate, when present, is `crates/proto-codec` and requires the
   canonical proto crate.
 - Every tracked `.proto` schema lives beneath `crates/proto`.
+- In a `platform-workspace`, every tracked `.proto` schema instead lives beneath
+  its owning `apps/<app>/contract/proto` directory.
 - Nested Cargo packages beneath `crates/proto` are forbidden.
 - `bindings/`, `gen/`, and `packages/` declare every tracked immediate sublane.
+  A `platform-workspace` additionally declares every immediate `apps/`,
+  `kits/`, `servers/`, and `workers/` sublane.
 - Consumer repositories retain the local checker and vendored shared core under
   `scripts/`. Only the `tooling` archetype may set `requireReleaseReadiness` to
   `false`, allowing this package to validate its source core rather than vendor
@@ -152,6 +203,36 @@ context.assertRepositoryShapePolicy({
     { path: "crates/proto-codec", role: "proto-codec" },
   ],
   subLanes: {},
+  forbiddenPaths: [],
+  requireReleaseReadiness: true,
+});
+```
+
+## Platform Workspace Example
+
+```js
+context.assertRepositoryShapePolicy({
+  archetype: "platform-workspace",
+  requiredLanes: [
+    "crates",
+    "kits",
+    "apps",
+    "servers",
+    "workers",
+    "conformance",
+    "docs",
+    "scripts",
+    ".github",
+  ],
+  optionalLanes: [],
+  exceptions: [],
+  crates: [{ path: "crates/platform", role: "support" }],
+  subLanes: {
+    apps: ["example"],
+    kits: ["app", "server"],
+    servers: ["example"],
+    workers: ["example"],
+  },
   forbiddenPaths: [],
   requireReleaseReadiness: true,
 });

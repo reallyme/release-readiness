@@ -11,6 +11,8 @@ import { fileURLToPath } from "node:url";
 
 const MAX_CHECKER_BYTES = 524_288;
 const MAX_SHARED_CORE_BYTES = 262_144;
+const MAX_TRACKED_FILES_BYTES = 16_777_216;
+const CONTRACT_VERSION = 12;
 
 const failure = (message) => {
   console.error(`release readiness runner failed: ${message}`);
@@ -67,15 +69,53 @@ if (!timingSafeEqual(vendoredDigest, upstreamDigest)) {
   failure("shared core does not match the pinned package");
 }
 
+const trackedFilesResult = spawnSync("git", ["ls-files", "-z"], {
+  cwd: repositoryRoot,
+  encoding: "utf8",
+  maxBuffer: MAX_TRACKED_FILES_BYTES,
+});
+if (trackedFilesResult.error !== undefined || trackedFilesResult.status !== 0) {
+  failure("could not enumerate Git-tracked source files");
+}
+const trackedFiles = trackedFilesResult.stdout.split("\0").filter((path) => path.length !== 0);
+const requiredSourcePolicies = new Set();
+for (const path of trackedFiles) {
+  if (path.endsWith(".rs")) {
+    requiredSourcePolicies.add("rust");
+  } else if (/\.(?:cts|mts|tsx?|ts)$/u.test(path)) {
+    requiredSourcePolicies.add("typescript");
+  } else if (path.endsWith(".swift") && !/(?:^|\/)Package\.swift$/u.test(path)) {
+    requiredSourcePolicies.add("swift");
+  } else if (path.endsWith(".kt")) {
+    requiredSourcePolicies.add("kotlin");
+  }
+}
+
 const result = spawnSync(process.execPath, [checkerPath, ...process.argv.slice(2)], {
   cwd: repositoryRoot,
-  env: process.env,
-  stdio: "inherit",
+  env: {
+    ...process.env,
+    RELEASE_READINESS_ENFORCED_CONTRACT: String(CONTRACT_VERSION),
+    RELEASE_READINESS_SOURCE_POLICY_FD: "3",
+  },
+  stdio: ["inherit", "inherit", "inherit", "pipe"],
 });
 if (result.error !== undefined) {
   failure("consumer checker could not be started");
 }
 if (!Number.isInteger(result.status)) {
   failure("consumer checker ended without a deterministic exit status");
+}
+if (result.status === 0) {
+  const reportedSourcePolicies = new Set(
+    (result.output[3]?.toString("utf8") ?? "")
+      .split("\n")
+      .filter((language) => language.length !== 0),
+  );
+  for (const language of requiredSourcePolicies) {
+    if (!reportedSourcePolicies.has(language)) {
+      failure(`consumer checker did not enforce the shared ${language} source policy`);
+    }
+  }
 }
 process.exit(result.status);

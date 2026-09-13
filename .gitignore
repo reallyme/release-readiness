@@ -32,7 +32,6 @@ target/
 /AGENTS.md
 /.claude/
 
-
 # Generated artifacts
 /coverage/
 /tarpaulin-report.html
