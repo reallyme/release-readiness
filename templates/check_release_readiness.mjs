@@ -26,7 +26,7 @@ const repositoryPolicy = {
   vendoredCore: {
     scriptPath: "scripts/check_release_readiness.mjs",
     corePath: "scripts/release-readiness/core.mjs",
-    version: "0.6.1",
+    version: "0.6.2",
   },
   workflowActions: {},
   nodeWorkflows: {

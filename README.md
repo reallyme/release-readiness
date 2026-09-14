@@ -39,10 +39,11 @@ runner so policy fixes do not remain trapped in stale local copies.
   infrastructure profiles keep executable hosting separate from deployment
   intent and operational control. Application and application-collection
   profiles distinguish an independently released application from a repository
-  containing several independently bounded applications. Product-workspace
-  profiles cover several cooperating applications that jointly implement one
-  product and share domain or protocol foundations. Facades are optional crate
-  roles rather than separate repository archetypes. Taxonomy,
+  containing several independently bounded applications, including collections
+  with explicitly owned shared domain, event, or protocol packages.
+  Product-workspace profiles cover several cooperating applications that
+  jointly implement one product and share a release lifecycle. Facades are
+  optional crate roles rather than separate repository archetypes. Taxonomy,
   conformance-suite, and documentation-site profiles separate canonical data,
   executable verification, evidence, and rendered documentation.
 - SPDX headers for tracked source files, with typed generated/vendored/
@@ -66,7 +67,7 @@ current marker is:
 ```js
 assertContains(
   "scripts/release-readiness/core.mjs",
-  'RELEASE_READINESS_VERSION = "0.6.1"',
+  'RELEASE_READINESS_VERSION = "0.6.2"',
 );
 ```
 
@@ -111,6 +112,10 @@ For a new Rust/protobuf repository, start from
 [`templates/check_release_readiness.mjs`](templates/check_release_readiness.mjs)
 and the companion [`templates/README.md`](templates/README.md). The template
 fails closed until every `REPLACE_*` marker has been replaced.
+
+Use the public [archetype matrix](docs/archetype-matrix.md) to select a
+repository responsibility, then apply the exact lane and ownership rules in
+[the repository-shape contract](docs/repository-shapes.md).
 
 Generated protobuf freshness checks should snapshot generated outputs, run
 `buf lint`, `buf generate`, the repository hardening script such as

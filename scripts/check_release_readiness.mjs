@@ -34,8 +34,8 @@ if (packageJson.license !== "MIT OR Apache-2.0") {
 if (packageJson.version !== RELEASE_READINESS_VERSION) {
   fail("package version must match the shared core release version");
 }
-if (RELEASE_READINESS_VERSION !== "0.6.1") {
-  fail("package version must remain 0.6.1 for this release");
+if (RELEASE_READINESS_VERSION !== "0.6.2") {
+  fail("package version must remain 0.6.2 for this release");
 }
 if (
   JSON.stringify(packageJson.files) !==
@@ -56,7 +56,7 @@ for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]
   }
 }
 
-assertContains("core.mjs", 'RELEASE_READINESS_VERSION = "0.6.1"');
+assertContains("core.mjs", 'RELEASE_READINESS_VERSION = "0.6.2"');
 assertNotContains("core.mjs", "RELEASE_READINESS_CORE_CONTRACT_VERSION");
 assertContains("package.json", '"reallyme-release-readiness": "scripts/run-consumer-check.mjs"');
 assertContains("scripts/run-consumer-check.mjs", "timingSafeEqual");
@@ -91,12 +91,22 @@ const repositoryArchetypes = [
 for (const archetype of repositoryArchetypes) {
   assertContains("core.mjs", `"${archetype}": {`);
   assertContains("docs/repository-shapes.md", `| \`${archetype}\` |`);
+  assertContains("docs/archetype-matrix.md", `| \`${archetype}\` |`);
 }
 assertContains("docs/repository-shapes.md", "## Choosing an Application Archetype");
+assertContains("docs/archetype-matrix.md", "## Application Decision");
+assertContains("docs/archetype-matrix.md", "## Server and Service Decision");
+assertContains("docs/archetype-matrix.md", "Sharing `crates/domain`");
+assertNotContains("docs/archetype-matrix.md", "| Example |");
+assertContains(".gitignore", "/matrix.md");
 assertContains("docs/repository-shapes.md", "## Facade Role");
 assertContains("docs/repository-shapes.md", "## Cargo Crate Roles");
 assertContains("docs/repository-shapes.md", "Select exactly one archetype");
 assertContains("docs/repository-shapes.md", "apps/<app>/contract/proto");
+assertContains(
+  "docs/repository-shapes.md",
+  "shared schemas live in `crates/proto`",
+);
 const cargoCrateRoles = [
   "adapter",
   "domain",
@@ -187,7 +197,7 @@ assertContains("README.md", "retired-path enforcement");
 assertContains("README.md", "buf generate");
 assertContains("README.md", "harden-generated-example-proto.mjs");
 assertContains("README.md", "actions/workflows/checks.yml/badge.svg");
-assertContains("README.md", 'RELEASE_READINESS_VERSION = "0.6.1"');
+assertContains("README.md", 'RELEASE_READINESS_VERSION = "0.6.2"');
 assertContains("core.mjs", "scalarFieldClassifications");
 assertContains("core.mjs", "unclassified protobuf scalar field");
 assertContains("templates/check_release_readiness.mjs", "scalarFieldClassifications");
@@ -216,7 +226,7 @@ assertContains(
   "reallyMeLatestStableDependencies: true",
 );
 assertContains("templates/check_release_readiness.mjs", "rustSource: {");
-assertContains("templates/check_release_readiness.mjs", 'version: "0.6.1"');
+assertContains("templates/check_release_readiness.mjs", 'version: "0.6.2"');
 assertContains("templates/check_release_readiness.mjs", "repositoryShape: {");
 assertContains("templates/check_release_readiness.mjs", 'archetype: "protocol-engine"');
 assertContains("templates/check_release_readiness.mjs", "typescriptSource: {");

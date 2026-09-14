@@ -18,6 +18,7 @@ directories.
 | `bindings/` | ABI and platform adapters only |
 | `gen/` | Generated platform-language sources |
 | `packages/` | Distributable developer packages |
+| `app/` | One standalone TypeScript application and its application-owned contract |
 | `apps/` | Named application or deployable boundaries within a collection, product workspace, or platform workspace |
 | `taxonomy/` | Canonical authored vocabulary, semantics, operations, profiles, and ownership |
 | `schema/` or `schemas/` | Machine-readable validation contracts for authored data or conformance artifacts |
@@ -94,7 +95,7 @@ does not pass unless it is declared as a typed exception.
 | `protocol-engine` | A protocol contract, its domain behavior, adapters, and conformance evidence |
 | `developer-platform` | Multi-language bindings, generated sources, packages, and developer-facing examples |
 | `application` | One independently released application whose deployment and operations are owned elsewhere |
-| `application-collection` | Independent applications colocated without sharing one product protocol or lifecycle |
+| `application-collection` | Independently releasable applications with optional explicitly owned shared packages |
 | `product-workspace` | Cooperating applications, shared foundations, and optional SDKs that jointly implement one product |
 | `hosted-service` | A deployed service together with its deployment and operational ownership |
 | `platform-workspace` | Shared platform kits, applications, servers, workers, and cross-host conformance |
@@ -124,6 +125,9 @@ The following tests resolve the most common overlaps:
   It is not a larger spelling of `product-workspace`.
 - Use the application decision table below for one application, independent
   colocated applications, or cooperating applications that form one product.
+
+The concise, example-neutral selection chart is available in
+[`archetype-matrix.md`](archetype-matrix.md).
 
 Typed exceptions document externally imposed roots; they do not combine two
 archetypes or excuse an architecture that belongs in another profile.
@@ -166,18 +170,22 @@ internal engines.
 
 ### `application`
 
-- Required: `crates`, `contracts`, `conformance`, `docs`, `scripts`, `.github`.
-- Permitted: `crates`, `contracts`, `conformance`, `vectors`, `fuzz`,
+- Required: `contracts`, `conformance`, `docs`, `scripts`, `.github`, plus at
+  least one implementation lane from `app` or `crates`.
+- Permitted: `app`, `crates`, `contracts`, `conformance`, `vectors`, `fuzz`,
   `examples`, `docs`, `scripts`, `.github`, `.cargo`, `config`, `migrations`,
   `resources`.
 
 This profile owns one independently released application. Its domain behavior,
 ports, configuration schema, resources, and public contracts remain here.
 Production deployment, operational control, credentials, and infrastructure do
-not. Rust implementation belongs beneath `crates/<application>`. A protobuf
-boundary uses the canonical `crates/proto` and, only when justified,
-`crates/proto-codec` structure. If the repository also owns a continuously
-operated service's deployment and operations, use `hosted-service` instead.
+not. Rust implementation belongs beneath `crates/<application>`. TypeScript
+application code belongs beneath `app/`; a repository may require both lanes
+when one application release contains both. Rust or shared protobuf uses the
+canonical `crates/proto` and, only when justified, `crates/proto-codec`.
+TypeScript application-owned protobuf uses `app/contract/proto`. If the
+repository also owns a continuously operated service's deployment and
+operations, use `hosted-service` instead.
 
 ### `application-collection`
 
@@ -185,19 +193,22 @@ operated service's deployment and operations, use `hosted-service` instead.
 - Permitted: `apps`, `crates`, `contracts`, `conformance`, `vectors`, `fuzz`,
   `examples`, `docs`, `scripts`, `.github`, `.cargo`.
 
-This profile colocates several applications that remain independently bounded.
-There must be at least two declared applications. They may share repository
-automation or small technical utilities, but they do not collectively form one
-product protocol or require coordinated runtime evolution. Each application is
-independently releasable even if the repository sometimes releases them
-together. Every immediate `apps/<app>` lane is declared explicitly.
-Application-specific implementation, configuration, resources, migrations,
-and contracts stay beneath that application. Protobuf schemas live beneath
-`apps/<app>/contract/proto`; a collection does not create a workspace-wide
-canonical proto crate. Root `crates/`, when present, contains only genuinely
-shared technical support and every package remains role-declared. If changing
-one application normally requires coordinated protocol or domain changes in
-the others, use `product-workspace` instead.
+This profile colocates several applications that remain independently bounded
+and releasable. There must be at least two declared applications. They may share
+explicitly owned domain types, event vocabulary, protocol schemas, adapters, or
+technical utilities without becoming one product release unit. Every immediate
+`apps/<app>` lane is declared explicitly. Application-specific implementation,
+configuration, resources, migrations, contracts, generated code, and schemas
+stay beneath that application. Each application may use Rust, TypeScript, or
+both; different members of the same collection may use different languages. A
+collection may combine shared schemas in
+`crates/proto` and application-owned schemas beneath
+`apps/<app>/contract/proto`; the optional `crates/proto-codec` owns only shared
+handwritten conversion. A generated app contract may remain beneath its owning
+`apps/<app>/contract` and depend on the shared proto crate, but it must not
+regenerate or duplicate shared wire types. Other shared implementation belongs
+in clearly named, role-declared root crates. Use `product-workspace` only when
+the applications jointly form one product compatibility and release lifecycle.
 
 ### `product-workspace`
 
@@ -208,8 +219,9 @@ the others, use `product-workspace` instead.
 
 This profile owns one cohesive product implemented by at least two cooperating
 applications. The applications may have different runtimes and deployment
-units, but they share product semantics, a coordinated compatibility boundary,
-or a canonical protocol. Shared domain, protocol, codec, client, generated SDK,
+units and may use Rust, TypeScript, or both, but they share product semantics, a
+coordinated compatibility boundary, or a canonical protocol. Shared domain,
+protocol, codec, client, generated SDK,
 and optional facade packages belong in the corresponding root-level `crates/`,
 `gen/`, and `packages/` lanes. Canonical protobuf schemas use `crates/proto`;
 unlike `application-collection`, protocol ownership is not distributed beneath
@@ -356,10 +368,13 @@ The checker enforces the following structural rules:
 - Compatibility packages named `crates/proto-*` are forbidden; the only
   permitted package with that prefix is exactly `crates/proto-codec`.
 - Every tracked `.proto` schema lives beneath `crates/proto`.
+- In an `application`, Rust or shared schemas live beneath `crates/proto`, while
+  TypeScript application-owned schemas may live beneath `app/contract/proto`.
 - In a `platform-workspace`, every tracked `.proto` schema instead lives beneath
   its owning `apps/<app>/contract/proto` directory.
-- In an `application-collection`, every tracked `.proto` schema instead lives
-  beneath its owning `apps/<app>/contract/proto` directory.
+- In an `application-collection`, shared schemas live in `crates/proto` and
+  application-owned schemas live beneath `apps/<app>/contract/proto`. Either
+  ownership class may be absent.
 - Nested Cargo packages beneath `crates/proto` are forbidden.
 - `bindings/`, `gen/`, and `packages/` declare every tracked immediate sublane.
   A `hosted-service` declares every immediate `services/` sublane; a `taxonomy`
@@ -456,12 +471,26 @@ alone is not a reason to add one.
 
 ## Choosing an Application Archetype
 
+The important application test is:
+
+- If an app can be versioned, deployed, removed, or moved independently, it
+  belongs in an `application-collection`.
+- If agent, controller, web, or similar components must evolve together for the
+  product to remain compatible, it is a `product-workspace`.
+- Sharing `crates/domain`, `crates/events`, or `crates/proto` does **not** by
+  itself create a product workspace.
+
+The three application archetypes are language-neutral. A standalone
+application, each collection member, and each product component may use Rust,
+TypeScript, or both. Language determines the implementation layout and source
+checks; it does not determine the repository archetype.
+
 | Question | `application` | `application-collection` | `product-workspace` |
 | --- | --- | --- | --- |
 | How many applications? | One | At least two independently bounded applications | At least two cooperating applications |
 | Product ownership | The application is the independently released unit | Each application retains its own product and compatibility boundary | The repository owns one product spanning all applications |
-| Protocol ownership | One canonical `crates/proto`, when needed | Each `apps/<app>/contract/proto` owns its protocol | One shared canonical `crates/proto`, when needed |
-| Shared domain and SDKs | Internal to the one application | Only small, product-neutral technical support | Expected when genuinely shared by the product |
+| Protocol ownership | Rust/shared schemas use `crates/proto`; TypeScript app schemas use `app/contract/proto` | Shared schemas use `crates/proto`; app schemas use `apps/<app>/contract/proto` | One shared canonical `crates/proto`, when needed |
+| Shared domain and SDKs | Internal to the one application | Explicit shared packages are allowed; apps retain independent public and release boundaries | Expected when genuinely shared by the product |
 | Release and compatibility | One release unit | Applications can evolve or separate independently | Coordinated across the product components |
 | Deployment material | Application-neutral config and resources; host composition elsewhere | Application-owned material stays beneath each app | Generic product containers and examples may use root `deploy/` |
 | Facade | Optional | Optional when shared root crates exist | Optional |
@@ -604,8 +633,14 @@ its implementation out of the repository root:
 
 ```text
 application/
-  Cargo.toml
-  crates/
+  Cargo.toml               # when Rust is present
+  app/                     # when TypeScript is present
+    contract/
+      proto/               # optional app-owned schemas
+    src/
+    tests/
+    package.json
+  crates/                  # when Rust is present
     application/
     proto/
     proto-codec/          # only with a real wire/domain conversion boundary
@@ -626,7 +661,7 @@ application/
 ```js
 context.assertRepositoryShapePolicy({
   archetype: "application",
-  requiredLanes: ["crates", "contracts", "conformance", "docs", "scripts", ".github"],
+  requiredLanes: ["app", "crates", "contracts", "conformance", "docs", "scripts", ".github"],
   optionalLanes: ["config", "migrations", "resources", "vectors", "fuzz", "examples"],
   exceptions: [],
   crates: [
@@ -639,6 +674,11 @@ context.assertRepositoryShapePolicy({
   requireReleaseReadiness: true,
 });
 ```
+
+For a Rust-only application, omit `app` from `requiredLanes`. For a
+TypeScript-only application, omit `crates` from `requiredLanes` and use an empty
+`crates` declaration. When both implementations ship as one application, keep
+both required.
 
 An application collection keeps application-owned material together beneath
 each declared application. Shared root crates must not become a dumping ground
@@ -661,7 +701,13 @@ application-collection/
         proto/
       src/
       tests/
-  crates/                  # optional, genuinely shared implementation only
+  crates/                  # optional, explicitly shared implementation
+    domain/                # optional shared domain vocabulary
+    events/                # optional shared event contracts
+    proto/                 # optional canonical shared schemas and DTOs
+      proto/
+      src/
+    proto-codec/           # optional shared handwritten conversion
   contracts/               # optional, collection-wide commitments only
   conformance/
   vectors/                 # optional
@@ -673,13 +719,23 @@ application-collection/
   .github/
 ```
 
+Each `apps/<app>` member may contain a Rust package, a TypeScript package, or
+both. The collection does not require every member to use the same language.
+Language-specific release-readiness policies govern every authored source file
+independently of this repository-shape declaration.
+
 ```js
 context.assertRepositoryShapePolicy({
   archetype: "application-collection",
   requiredLanes: ["apps", "conformance", "docs", "scripts", ".github"],
   optionalLanes: ["crates", "contracts", "vectors", "fuzz", "examples"],
   exceptions: [],
-  crates: [{ path: "crates/shared-events", role: "support" }],
+  crates: [
+    { path: "crates/domain", role: "domain" },
+    { path: "crates/events", role: "domain" },
+    { path: "crates/proto", role: "proto" },
+    { path: "crates/proto-codec", role: "proto-codec" },
+  ],
   subLanes: { apps: ["first-application", "second-application"] },
   forbiddenPaths: [],
   requireReleaseReadiness: true,
