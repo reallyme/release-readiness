@@ -26,7 +26,7 @@ const repositoryPolicy = {
   vendoredCore: {
     scriptPath: "scripts/check_release_readiness.mjs",
     corePath: "scripts/release-readiness/core.mjs",
-    version: "0.6.0",
+    version: "0.6.1",
   },
   workflowActions: {},
   nodeWorkflows: {
@@ -56,6 +56,7 @@ const repositoryPolicy = {
   //     { path: "crates/REPLACE_DOMAIN_CRATE", role: "domain" },
   //     { path: "crates/proto", role: "proto" },
   //     { path: "crates/proto-codec", role: "proto-codec" },
+  //     // Optional: { path: "crates/REPLACE_FACADE_CRATE", role: "facade" },
   //   ],
   //   subLanes: {
   //     bindings: ["ffi", "jni", "wasm"],

@@ -14,11 +14,11 @@ directories.
 
 | Lane | Meaning |
 | --- | --- |
-| `crates/` | Rust domain implementation and explicitly declared support crates |
+| `crates/` | Rust implementation packages with explicitly declared architectural roles |
 | `bindings/` | ABI and platform adapters only |
 | `gen/` | Generated platform-language sources |
 | `packages/` | Distributable developer packages |
-| `apps/` | Independently bounded applications within a collection or platform workspace |
+| `apps/` | Named application or deployable boundaries within a collection, product workspace, or platform workspace |
 | `taxonomy/` | Canonical authored vocabulary, semantics, operations, profiles, and ownership |
 | `schema/` or `schemas/` | Machine-readable validation contracts for authored data or conformance artifacts |
 | `views/` | Generated, consumer-specific projections of canonical authored data |
@@ -37,17 +37,48 @@ directories.
 | `tests/` | Root-level validation for non-implementation artifacts in approved data, conformance, and documentation profiles |
 | `.github/` | CI and release policy |
 
-Applications may additionally use `config/`, `migrations/`, and `resources/`.
-Hosted services may additionally use `services/`, `deploy/`, `migrations/`,
-`operations/`, `config/`, and `docker/`. Runtime-composition repositories use
-`configs/` and `deploy/`. Infrastructure repositories use capability-named
-`topology/`, `provisioning/`, `configuration/`, `deployments/`, `networking/`,
-`observability/`, and `operations/` lanes. Conformance suites may use
-`upstream/`, `plans/`, `adapters/`, `schemas/`, `tests/`, `results/`, and
-`evidence/`. Taxonomy repositories use `taxonomy/`, `schema/`, `views/`, and
-`consumers/`. Documentation sites use `content/`, `components/`, `snippets/`,
-and `assets/`. Tooling repositories may use `templates/`, `test/`, and
-`fixtures/`.
+Specialized archetypes add the following vocabulary:
+
+| Lane | Meaning |
+| --- | --- |
+| `apps/<app>/contract/` | The one canonical contract package owned by a particular application |
+| `kits/` | Reusable, host-neutral platform composition kits |
+| `servers/` | Native server compositions in a platform workspace |
+| `workers/` | Edge or Worker compositions in a platform workspace |
+| `services/` | Independently named deployed service boundaries |
+| `config/` | Non-secret application or service configuration, defaults, and schemas |
+| `configs/` | Non-secret runtime-composition inputs for several executable hosts |
+| `configuration/` | Infrastructure configuration-management definitions |
+| `deploy/` | Buildable deployment artifacts and generic deployment examples owned with a product, runtime, or service |
+| `deployments/` | Environment and provider deployment definitions owned by infrastructure |
+| `operations/` | Runbooks, operational policy, and reviewed control-plane declarations |
+| `migrations/` | Versioned application or service data migrations |
+| `resources/` | Non-secret runtime resources shipped with an application |
+| `docker/` | Container composition owned by a service or runtime repository |
+| `topology/` | Authored infrastructure topology and environment relationships |
+| `provisioning/` | Infrastructure resource provisioning definitions |
+| `networking/` | Ingress, routing, load balancing, and network policy |
+| `observability/` | Metrics, logs, traces, alerts, and dashboards |
+| `tools/` | Infrastructure-owned compiled or scripted operational tools |
+| `upstream/` | Pinned third-party conformance suites or immutable source snapshots |
+| `plans/` | Owned conformance selections and execution plans |
+| `adapters/` | Integration code between an upstream suite and systems under test |
+| `results/` | Raw, reproducible conformance execution output |
+| `evidence/` | Reviewed certification or conformance evidence |
+| `localization/` | Documentation translations and locale-specific content |
+| `test/` | Tests for a tooling repository; implementation repositories use package-local test directories |
+| `fixtures/` | Stable inputs owned by tooling tests rather than interoperability vectors |
+| `templates/` | Consumer templates owned by a tooling repository |
+| `.cargo/` | Repository-scoped Cargo configuration |
+| `.changeset/` | Changesets for a developer platform's distributable packages |
+| `gradle/` | Shared Gradle build infrastructure for a developer platform |
+
+Root `contracts/` and nested `apps/<app>/contract/` are intentionally different.
+The plural root lane records repository-wide public commitments. The singular
+nested lane is one application-owned contract package and is the only location
+for that application's protobuf schemas in application collections and platform
+workspaces. Likewise, `config/`, `configs/`, and `configuration/` reflect three
+different owners; they are not spelling variants.
 
 These contracts are organization-neutral. Repository ownership affects the
 configured copyright and license policy, not the meaning of a directory lane.
@@ -62,8 +93,9 @@ does not pass unless it is declared as a typed exception.
 | `foundational-library` | Reusable domain or technical foundations without ownership of an end-to-end protocol |
 | `protocol-engine` | A protocol contract, its domain behavior, adapters, and conformance evidence |
 | `developer-platform` | Multi-language bindings, generated sources, packages, and developer-facing examples |
-| `application` | One independently released, host-neutral application |
-| `application-collection` | Several explicitly named, independently bounded applications released from one repository |
+| `application` | One independently released application whose deployment and operations are owned elsewhere |
+| `application-collection` | Independent applications colocated without sharing one product protocol or lifecycle |
+| `product-workspace` | Cooperating applications, shared foundations, and optional SDKs that jointly implement one product |
 | `hosted-service` | A deployed service together with its deployment and operational ownership |
 | `platform-workspace` | Shared platform kits, applications, servers, workers, and cross-host conformance |
 | `runtime-composition` | Executable host composition without application or protocol business ownership |
@@ -73,6 +105,29 @@ does not pass unless it is declared as a typed exception.
 | `documentation-site` | Versioned public or internal documentation whose navigation, contracts, examples, and checks ship together |
 | `tooling` | Repository-independent development, policy, generation, or release tooling |
 
+Select exactly one archetype from the repository's primary ownership and
+release boundary, not from whichever name makes its current directories pass.
+The following tests resolve the most common overlaps:
+
+- Use `protocol-engine`, not `foundational-library`, when the repository owns an
+  end-to-end protocol contract and its conformance behavior.
+- Use `developer-platform` when the primary product is a coordinated public SDK
+  surface across languages; having one incidental binding does not qualify.
+- Use `hosted-service` when the repository owns deployed service boundaries,
+  deployment artifacts, and operations together. Use `runtime-composition`
+  when it owns executable wiring but imports the application or protocol
+  behavior from elsewhere.
+- Use `infrastructure` when provisioning, topology, networking, and operational
+  control are the product of the repository rather than one hosted service.
+- Use `platform-workspace` only for a reusable platform spanning kits,
+  applications, native servers, and Workers with application-owned contracts.
+  It is not a larger spelling of `product-workspace`.
+- Use the application decision table below for one application, independent
+  colocated applications, or cooperating applications that form one product.
+
+Typed exceptions document externally imposed roots; they do not combine two
+archetypes or excuse an architecture that belongs in another profile.
+
 ### `foundational-library`
 
 - Required: `crates`, `docs`, `scripts`, `.github`.
@@ -80,12 +135,21 @@ does not pass unless it is declared as a typed exception.
   `conformance`, `vectors`, `fuzz`, `examples`, `docs`, `scripts`, `.github`,
   `.cargo`.
 
+This profile owns reusable technical or domain foundations. It may publish
+several focused crates, but it does not own an end-to-end protocol, application
+lifecycle, or deployment. Optional bindings and packages expose the same
+foundation rather than forming a separate developer product.
+
 ### `protocol-engine`
 
 - Required: `crates`, `contracts`, `conformance`, `docs`, `scripts`, `.github`.
 - Permitted: `crates`, `bindings`, `gen`, `packages`, `contracts`,
   `conformance`, `vectors`, `fuzz`, `examples`, `docs`, `scripts`, `.github`,
   `.cargo`.
+
+This profile owns an end-to-end protocol contract, its domain behavior, wire
+boundaries, and conformance evidence. It does not own a hosted deployment or a
+multi-language developer experience merely because it generates bindings.
 
 ### `developer-platform`
 
@@ -95,6 +159,11 @@ does not pass unless it is declared as a typed exception.
   `conformance`, `vectors`, `fuzz`, `examples`, `docs`, `scripts`, `.github`,
   `.cargo`, `.changeset`, `gradle`.
 
+This profile owns one coordinated public developer surface across language and
+platform bindings. Generated code stays in `gen/`, authored packaging stays in
+`packages/`, and examples demonstrate the supported public API rather than
+internal engines.
+
 ### `application`
 
 - Required: `crates`, `contracts`, `conformance`, `docs`, `scripts`, `.github`.
@@ -102,12 +171,13 @@ does not pass unless it is declared as a typed exception.
   `examples`, `docs`, `scripts`, `.github`, `.cargo`, `config`, `migrations`,
   `resources`.
 
-This profile owns one independently released, host-neutral application. Its
-domain behavior, ports, configuration schema, and public contracts remain here;
-listener lifecycle, executable composition, deployment, and infrastructure do
+This profile owns one independently released application. Its domain behavior,
+ports, configuration schema, resources, and public contracts remain here.
+Production deployment, operational control, credentials, and infrastructure do
 not. Rust implementation belongs beneath `crates/<application>`. A protobuf
 boundary uses the canonical `crates/proto` and, only when justified,
-`crates/proto-codec` structure.
+`crates/proto-codec` structure. If the repository also owns a continuously
+operated service's deployment and operations, use `hosted-service` instead.
 
 ### `application-collection`
 
@@ -115,13 +185,37 @@ boundary uses the canonical `crates/proto` and, only when justified,
 - Permitted: `apps`, `crates`, `contracts`, `conformance`, `vectors`, `fuzz`,
   `examples`, `docs`, `scripts`, `.github`, `.cargo`.
 
-This profile owns several applications whose shared release cadence and
-dependency graph justify one repository. Every immediate `apps/<app>` lane is
-declared explicitly. Application-specific implementation, configuration,
-resources, migrations, and contracts stay beneath that application. Protobuf
-schemas live beneath `apps/<app>/contracts/proto`; a collection does not create
-a workspace-wide canonical proto crate. Root `crates/`, when present, contains
-only genuinely shared implementation and every package remains role-declared.
+This profile colocates several applications that remain independently bounded.
+There must be at least two declared applications. They may share repository
+automation or small technical utilities, but they do not collectively form one
+product protocol or require coordinated runtime evolution. Each application is
+independently releasable even if the repository sometimes releases them
+together. Every immediate `apps/<app>` lane is declared explicitly.
+Application-specific implementation, configuration, resources, migrations,
+and contracts stay beneath that application. Protobuf schemas live beneath
+`apps/<app>/contract/proto`; a collection does not create a workspace-wide
+canonical proto crate. Root `crates/`, when present, contains only genuinely
+shared technical support and every package remains role-declared. If changing
+one application normally requires coordinated protocol or domain changes in
+the others, use `product-workspace` instead.
+
+### `product-workspace`
+
+- Required: `apps`, `crates`, `conformance`, `docs`, `scripts`, `.github`.
+- Permitted: `apps`, `crates`, `bindings`, `gen`, `packages`, `contracts`,
+  `conformance`, `vectors`, `fuzz`, `examples`, `docs`, `scripts`, `.github`,
+  `.cargo`, `deploy`.
+
+This profile owns one cohesive product implemented by at least two cooperating
+applications. The applications may have different runtimes and deployment
+units, but they share product semantics, a coordinated compatibility boundary,
+or a canonical protocol. Shared domain, protocol, codec, client, generated SDK,
+and optional facade packages belong in the corresponding root-level `crates/`,
+`gen/`, and `packages/` lanes. Canonical protobuf schemas use `crates/proto`;
+unlike `application-collection`, protocol ownership is not distributed beneath
+each application. Generic build and deployment examples may live in `deploy/`;
+environment-specific topology, credentials, secret values, and private rollout
+policy remain in hosted-service or infrastructure repositories.
 
 ### `hosted-service`
 
@@ -142,10 +236,10 @@ boundaries.
 - Permitted: `crates`, `kits`, `apps`, `servers`, `workers`, `conformance`,
   `docs`, `scripts`, `.github`.
 
-This profile owns the shared Platform facade, reusable host-neutral kits,
+This profile owns the shared platform facade, reusable host-neutral kits,
 reference applications, native server composition, Worker composition, and
 cross-host conformance. Each application owns its protobuf schema beneath
-`apps/<app>/contract/proto`; Platform does not centralize app contracts in a
+`apps/<app>/contract/proto`; the platform does not centralize app contracts in a
 workspace-wide `crates/proto` package.
 
 ### `runtime-composition`
@@ -224,6 +318,13 @@ indistinguishable from architectural drift.
 - Permitted: `contracts`, `conformance`, `vectors`, `examples`, `docs`,
   `scripts`, `.github`, `templates`, `test`, `fixtures`.
 
+This profile owns repository-independent checkers, generators, policy, or
+release automation. Consumer templates remain distinct from the tool's own
+tests and fixtures. It is the only archetype allowed to disable the requirement
+to vendor release-readiness into itself. A root package entrypoint such as this
+repository's single-file vendorable core is a distributable file, not a new
+directory lane; executable automation remains in `scripts/`.
+
 Every archetype-required lane must appear in `requiredLanes`. Every other
 tracked root directory must be listed in `optionalLanes` or as a typed
 exception. An optional lane may be absent; a required lane and every configured
@@ -245,6 +346,9 @@ The checker enforces the following structural rules:
 - Repositories with `crates/` have a virtual root Cargo workspace rather than a
   root package.
 - Every Cargo package beneath `crates/` is declared with an architectural role.
+- A repository may declare zero or one crate with role `facade`. A facade is a
+  packaging surface, not a repository archetype, and requires at least one
+  internal package.
 - At most one `proto` crate and one `proto-codec` crate are declared.
 - The canonical proto crate is `crates/proto`.
 - The conversion crate, when present, is `crates/proto-codec` and requires the
@@ -255,20 +359,50 @@ The checker enforces the following structural rules:
 - In a `platform-workspace`, every tracked `.proto` schema instead lives beneath
   its owning `apps/<app>/contract/proto` directory.
 - In an `application-collection`, every tracked `.proto` schema instead lives
-  beneath its owning `apps/<app>/contracts/proto` directory.
+  beneath its owning `apps/<app>/contract/proto` directory.
 - Nested Cargo packages beneath `crates/proto` are forbidden.
 - `bindings/`, `gen/`, and `packages/` declare every tracked immediate sublane.
   A `hosted-service` declares every immediate `services/` sublane; a `taxonomy`
   declares every immediate `views/` sublane; and a `documentation-site`
-  declares every immediate `content/` sublane. An `application-collection`
-  declares every immediate `apps/` sublane. A `platform-workspace` additionally
-  declares every immediate `apps/`, `kits/`, `servers/`, and `workers/` sublane.
+  declares every immediate `content/` sublane. An `application-collection` or
+  `product-workspace` declares every immediate `apps/` sublane. A
+  `platform-workspace` additionally declares every immediate `apps/`, `kits/`,
+  `servers/`, and `workers/` sublane.
+- An `application-collection` and a `product-workspace` each declare at least
+  two immediate application sublanes. A repository with one independently
+  released application uses `application`.
 - Consumer repositories retain the local checker and vendored shared core under
   `scripts/`. Only the `tooling` archetype may set `requireReleaseReadiness` to
   `false`, allowing this package to validate its source core rather than vendor
   a copy of itself.
 - Additional repository-specific retired paths may be declared in
   `forbiddenPaths`.
+
+## Cargo Crate Roles
+
+Every Cargo package beneath `crates/` declares exactly one role from this
+closed vocabulary. The role records the package's primary architectural
+responsibility; it is not a substitute for dependency-boundary checks.
+
+| Role | Permitted responsibility |
+| --- | --- |
+| `domain` | Core domain values, invariants, and behavior without transport or storage ownership |
+| `proto` | Canonical protobuf schemas and generated wire DTOs |
+| `proto-codec` | Authored validation and conversion between untrusted wire DTOs and domain values |
+| `adapter` | Translation at an inbound, outbound, platform, or FFI boundary |
+| `transport` | Protocol transport mechanics and clients without product-domain decisions |
+| `provider` | A concrete implementation of a domain-owned external capability port |
+| `storage` | Persistence implementation behind a domain-owned storage port |
+| `runtime` | Executable lifecycle, dependency wiring, and host composition |
+| `facade` | A thin, stable consumer package aggregating explicitly selected internal APIs |
+| `support` | Reusable internal technical support with no domain, runtime, or public-facade ownership |
+| `test-support` | Reusable test-only builders, fixtures, and harness support |
+
+Choose the narrowest truthful role. For example, a client that owns HTTP or RPC
+mechanics is `transport`; a package implementing a business capability through
+an external vendor is `provider`; and code translating either boundary into
+domain requests is an `adapter`. Mixed responsibilities should be separated or
+resolved in architecture review rather than hidden behind `support`.
 
 ## Proto and Proto-Codec Meaning
 
@@ -289,6 +423,51 @@ That decision remains an architecture-review responsibility. Once the decision
 is declared, dependency-boundary and source policies should verify that
 business logic does not leak into the proto crate and untrusted wire values do
 not bypass the conversion boundary.
+
+## Facade Role
+
+A facade is optional and independently configurable for every crate-bearing
+archetype. Declare it by assigning one crate the `facade` role; do not select a
+different archetype and do not add a separate Boolean that could disagree with
+the crate declaration:
+
+```js
+crates: [
+  { path: "crates/domain", role: "domain" },
+  { path: "crates/client", role: "transport" },
+  { path: "crates/product", role: "facade" },
+]
+```
+
+Omitting the role means the repository has no facade. The checker permits at
+most one and rejects a facade with no internal package to aggregate. A facade
+exists only to provide a deliberate, stable consumer surface: feature
+selection, explicit named re-exports, and package documentation. It must not
+own domain behavior, adapters, runtime composition, storage, protocol
+conversion, or generated code. Rust source policy keeps its `lib.rs` thin;
+dependency-boundary review must additionally ensure internal crates never
+depend back on the facade.
+
+Use a facade when external consumers benefit from one deliberately curated
+package while the implementation remains split across several internal
+packages. Omit it when consumers already depend on a single natural package or
+when every package is an intentionally separate public surface. Repository size
+alone is not a reason to add one.
+
+## Choosing an Application Archetype
+
+| Question | `application` | `application-collection` | `product-workspace` |
+| --- | --- | --- | --- |
+| How many applications? | One | At least two independently bounded applications | At least two cooperating applications |
+| Product ownership | The application is the independently released unit | Each application retains its own product and compatibility boundary | The repository owns one product spanning all applications |
+| Protocol ownership | One canonical `crates/proto`, when needed | Each `apps/<app>/contract/proto` owns its protocol | One shared canonical `crates/proto`, when needed |
+| Shared domain and SDKs | Internal to the one application | Only small, product-neutral technical support | Expected when genuinely shared by the product |
+| Release and compatibility | One release unit | Applications can evolve or separate independently | Coordinated across the product components |
+| Deployment material | Application-neutral config and resources; host composition elsewhere | Application-owned material stays beneath each app | Generic product containers and examples may use root `deploy/` |
+| Facade | Optional | Optional when shared root crates exist | Optional |
+
+Use the ownership and compatibility rows as the deciding test. The number of
+directories alone does not determine the archetype.
 
 ## Taxonomy, Conformance, and Documentation Layouts
 
@@ -470,7 +649,7 @@ application-collection/
   Cargo.toml
   apps/
     first-application/
-      contracts/
+      contract/
         proto/
       config/
       migrations/
@@ -478,7 +657,7 @@ application-collection/
       src/
       tests/
     second-application/
-      contracts/
+      contract/
         proto/
       src/
       tests/
@@ -502,6 +681,55 @@ context.assertRepositoryShapePolicy({
   exceptions: [],
   crates: [{ path: "crates/shared-events", role: "support" }],
   subLanes: { apps: ["first-application", "second-application"] },
+  forbiddenPaths: [],
+  requireReleaseReadiness: true,
+});
+```
+
+A product workspace keeps cooperating deployables beneath `apps/` while shared
+product semantics and protocol packages remain canonical:
+
+```text
+product-workspace/
+  Cargo.toml
+  apps/
+    agent/
+    controller/
+    web/
+  crates/
+    domain/
+    client/
+    proto/
+    proto-codec/          # only with a real wire/domain conversion boundary
+    product/              # optional facade
+  gen/                    # optional generated SDK sources
+  packages/               # optional authored SDK packages
+  deploy/                 # optional generic containers and examples
+  conformance/
+  docs/
+  scripts/
+    release-readiness/
+  .github/
+```
+
+```js
+context.assertRepositoryShapePolicy({
+  archetype: "product-workspace",
+  requiredLanes: ["apps", "crates", "conformance", "docs", "scripts", ".github"],
+  optionalLanes: ["gen", "packages", "deploy"],
+  exceptions: [],
+  crates: [
+    { path: "crates/domain", role: "domain" },
+    { path: "crates/client", role: "transport" },
+    { path: "crates/proto", role: "proto" },
+    { path: "crates/proto-codec", role: "proto-codec" },
+    { path: "crates/product", role: "facade" },
+  ],
+  subLanes: {
+    apps: ["agent", "controller", "web"],
+    gen: ["typescript"],
+    packages: ["ts-client"],
+  },
   forbiddenPaths: [],
   requireReleaseReadiness: true,
 });
@@ -544,7 +772,7 @@ context.assertRepositoryShapePolicy({
   ],
   optionalLanes: [],
   exceptions: [],
-  crates: [{ path: "crates/platform", role: "support" }],
+  crates: [{ path: "crates/platform", role: "facade" }],
   subLanes: {
     apps: ["example"],
     kits: ["app", "server"],

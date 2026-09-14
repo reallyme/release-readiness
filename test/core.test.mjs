@@ -173,7 +173,7 @@ const applicationShapePolicy = {
 const createApplicationCollectionShapeFixture = () => {
   const root = createFixture();
   for (const directory of [
-    "apps/catalog/contracts/proto",
+    "apps/catalog/contract/proto",
     "apps/messaging",
     "conformance",
     "docs",
@@ -188,7 +188,7 @@ const createApplicationCollectionShapeFixture = () => {
   writeFileSync(join(root, "Cargo.toml"), "[workspace]\nmembers = []\n");
   writeFileSync(join(root, "apps", "catalog", "README.md"), "catalog application\n");
   writeFileSync(
-    join(root, "apps", "catalog", "contracts", "proto", "catalog.proto"),
+    join(root, "apps", "catalog", "contract", "proto", "catalog.proto"),
     'syntax = "proto3";\n',
   );
   writeFileSync(join(root, "apps", "messaging", "README.md"), "messaging application\n");
@@ -212,6 +212,88 @@ const applicationCollectionShapePolicy = {
   forbiddenPaths: [],
   requireReleaseReadiness: true,
 };
+
+const createProductWorkspaceShapeFixture = ({ includeFacade = true } = {}) => {
+  const root = createFixture();
+  for (const directory of [
+    "apps/agent",
+    "apps/controller",
+    "apps/web",
+    "conformance",
+    "crates/client",
+    "crates/domain",
+    "crates/proto/proto",
+    "crates/proto-codec",
+    "deploy",
+    "docs",
+    "gen/typescript",
+    "packages/ts-client",
+    "scripts/release-readiness",
+    ...(includeFacade ? ["crates/product"] : []),
+  ]) {
+    mkdirSync(join(root, directory), { recursive: true });
+  }
+  copyFileSync(
+    new URL("../core.mjs", import.meta.url),
+    join(root, "scripts", "release-readiness", "core.mjs"),
+  );
+  writeFileSync(join(root, "Cargo.toml"), "[workspace]\nmembers = []\n");
+  for (const application of ["agent", "controller", "web"]) {
+    writeFileSync(join(root, "apps", application, "README.md"), `${application}\n`);
+  }
+  for (const crate of ["client", "domain", "proto", "proto-codec"]) {
+    writeFileSync(
+      join(root, "crates", crate, "Cargo.toml"),
+      `[package]\nname = "${crate}"\n`,
+    );
+  }
+  if (includeFacade) {
+    writeFileSync(
+      join(root, "crates", "product", "Cargo.toml"),
+      '[package]\nname = "product"\n',
+    );
+  }
+  writeFileSync(
+    join(root, "crates", "proto", "proto", "product.proto"),
+    'syntax = "proto3";\n',
+  );
+  for (const directory of [
+    "conformance",
+    "deploy",
+    "docs",
+    "gen/typescript",
+    "packages/ts-client",
+  ]) {
+    writeFileSync(join(root, directory, "README.md"), `${directory}\n`);
+  }
+  writeFileSync(join(root, "scripts", "check_release_readiness.mjs"), "export {};\n");
+  const gitInit = spawnSync("git", ["init", "--quiet"], { cwd: root, encoding: "utf8" });
+  assert.equal(gitInit.status, 0, gitInit.stderr);
+  const gitAdd = spawnSync("git", ["add", "."], { cwd: root, encoding: "utf8" });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  return root;
+};
+
+const productWorkspaceShapePolicy = ({ includeFacade = true } = {}) => ({
+  archetype: "product-workspace",
+  requiredLanes: ["apps", "crates", "conformance", "docs", "scripts", ".github"],
+  optionalLanes: ["deploy", "gen", "packages"],
+  exceptions: [],
+  crates: [
+    { path: "crates/client", role: "transport" },
+    { path: "crates/domain", role: "domain" },
+    { path: "crates/proto", role: "proto" },
+    { path: "crates/proto-codec", role: "proto-codec" },
+    ...(includeFacade ? [{ path: "crates/product", role: "facade" }] : []),
+  ],
+  subLanes: {
+    apps: ["agent", "controller", "web"],
+    gen: ["typescript"],
+    packages: ["ts-client"],
+  },
+  forbiddenPaths: [],
+  requireReleaseReadiness: true,
+});
 
 const createDirectoryShapeFixture = ({ directories, files = [] }) => {
   const root = createFixture();
@@ -318,6 +400,10 @@ const createPlatformWorkspaceShapeFixture = () => {
   writeFileSync(join(root, "Cargo.toml"), "[workspace]\nmembers = []\n");
   writeFileSync(join(root, "apps", "example", "README.md"), "example app\n");
   writeFileSync(
+    join(root, "apps", "example", "Cargo.toml"),
+    '[package]\nname = "example-app"\n',
+  );
+  writeFileSync(
     join(root, "apps", "example", "contract", "proto", "example.proto"),
     "syntax = \"proto3\";\n",
   );
@@ -353,7 +439,7 @@ const platformWorkspaceShapePolicy = {
   ],
   optionalLanes: [],
   exceptions: [],
-  crates: [{ path: "crates/platform", role: "support" }],
+  crates: [{ path: "crates/platform", role: "facade" }],
   subLanes: {
     apps: ["example"],
     kits: ["app"],
@@ -1381,6 +1467,140 @@ test("repository shape policy accepts a declared application-collection layout",
   context.assertRepositoryShapePolicy(applicationCollectionShapePolicy);
 });
 
+for (const archetype of ["application-collection", "product-workspace"]) {
+  test(`${archetype} requires at least two declared applications`, () => {
+    const root =
+      archetype === "application-collection"
+        ? createApplicationCollectionShapeFixture()
+        : createProductWorkspaceShapeFixture();
+    const policy =
+      archetype === "application-collection"
+        ? { ...applicationCollectionShapePolicy, subLanes: { apps: ["catalog"] } }
+        : {
+            ...productWorkspaceShapePolicy(),
+            subLanes: {
+              ...productWorkspaceShapePolicy().subLanes,
+              apps: ["agent"],
+            },
+          };
+    const result = runFixtureScript(
+      root,
+      `context.assertRepositoryShapePolicy(${JSON.stringify(policy)});`,
+    );
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /requires at least two application sublanes/u);
+  });
+}
+
+test("repository shape policy accepts a product-workspace with a shared protocol and facade", () => {
+  const root = createProductWorkspaceShapeFixture();
+  const context = createContext(root);
+
+  context.assertRepositoryShapePolicy(productWorkspaceShapePolicy());
+});
+
+test("product-workspace does not require a facade", () => {
+  const root = createProductWorkspaceShapeFixture({ includeFacade: false });
+  const context = createContext(root);
+
+  context.assertRepositoryShapePolicy(
+    productWorkspaceShapePolicy({ includeFacade: false }),
+  );
+});
+
+test("repository shape policy permits at most one facade", () => {
+  const root = createProductWorkspaceShapeFixture();
+  mkdirSync(join(root, "crates", "alternate-facade"), { recursive: true });
+  writeFileSync(
+    join(root, "crates", "alternate-facade", "Cargo.toml"),
+    '[package]\nname = "alternate-facade"\n',
+  );
+  const gitAdd = spawnSync("git", ["add", "crates/alternate-facade/Cargo.toml"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const policy = productWorkspaceShapePolicy();
+  policy.crates.push({ path: "crates/alternate-facade", role: "facade" });
+  const result = runFixtureScript(
+    root,
+    `context.assertRepositoryShapePolicy(${JSON.stringify(policy)});`,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /permits at most one facade crate/u);
+});
+
+test("repository shape policy rejects a facade with nothing to aggregate", () => {
+  const root = createFixture();
+  for (const directory of ["crates/product", "docs", "scripts/release-readiness"]) {
+    mkdirSync(join(root, directory), { recursive: true });
+  }
+  copyFileSync(
+    new URL("../core.mjs", import.meta.url),
+    join(root, "scripts", "release-readiness", "core.mjs"),
+  );
+  writeFileSync(join(root, "Cargo.toml"), "[workspace]\nmembers = []\n");
+  writeFileSync(
+    join(root, "crates", "product", "Cargo.toml"),
+    '[package]\nname = "product"\n',
+  );
+  writeFileSync(join(root, "docs", "README.md"), "docs\n");
+  writeFileSync(join(root, "scripts", "check_release_readiness.mjs"), "export {};\n");
+  const gitInit = spawnSync("git", ["init", "--quiet"], { cwd: root, encoding: "utf8" });
+  assert.equal(gitInit.status, 0, gitInit.stderr);
+  const gitAdd = spawnSync("git", ["add", "."], { cwd: root, encoding: "utf8" });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const policy = {
+    archetype: "foundational-library",
+    requiredLanes: ["crates", "docs", "scripts", ".github"],
+    optionalLanes: [],
+    exceptions: [],
+    crates: [{ path: "crates/product", role: "facade" }],
+    subLanes: {},
+    forbiddenPaths: [],
+    requireReleaseReadiness: true,
+  };
+  const result = runFixtureScript(
+    root,
+    `context.assertRepositoryShapePolicy(${JSON.stringify(policy)});`,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /facade crate requires at least one internal package/u);
+});
+
+test("application-collection rejects a workspace-wide product protocol", () => {
+  const root = createApplicationCollectionShapeFixture();
+  mkdirSync(join(root, "crates", "proto", "proto"), { recursive: true });
+  writeFileSync(
+    join(root, "crates", "proto", "Cargo.toml"),
+    '[package]\nname = "shared-proto"\n',
+  );
+  writeFileSync(
+    join(root, "crates", "proto", "proto", "shared.proto"),
+    'syntax = "proto3";\n',
+  );
+  const gitAdd = spawnSync("git", ["add", "crates/proto"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const policy = {
+    ...applicationCollectionShapePolicy,
+    optionalLanes: ["crates"],
+    crates: [{ path: "crates/proto", role: "proto" }],
+  };
+  const result = runFixtureScript(
+    root,
+    `context.assertRepositoryShapePolicy(${JSON.stringify(policy)});`,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /keeps protobuf ownership in application contracts/u);
+});
+
 test("repository shape policy accepts a canonical taxonomy layout", () => {
   const root = createDirectoryShapeFixture({
     directories: [
@@ -1509,7 +1729,7 @@ test("hosted-service requires every service to be declared", () => {
 
 test("application-collection keeps protobuf schemas inside application-owned contracts", () => {
   const root = createApplicationCollectionShapeFixture();
-  const misplacedPath = "apps/catalog/proto/catalog.proto";
+  const misplacedPath = "apps/catalog/contracts/proto/legacy.proto";
   mkdirSync(join(root, misplacedPath, ".."), { recursive: true });
   writeFileSync(join(root, misplacedPath), 'syntax = "proto3";\n');
   const gitAdd = spawnSync("git", ["add", misplacedPath], {
@@ -1523,7 +1743,7 @@ test("application-collection keeps protobuf schemas inside application-owned con
   );
 
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /requires protobuf schemas in apps\/<app>\/contracts\/proto/u);
+  assert.match(result.stderr, /requires protobuf schemas in apps\/<app>\/contract\/proto/u);
 });
 
 test("repository shape policy accepts a declared platform-workspace layout", () => {
@@ -3308,7 +3528,7 @@ test("local checker template is syntactically valid and fails closed by construc
   assert.match(template, /assertReallyMeRustProtoRepositoryPolicy/u);
   assert.match(template, /assertNoTemplateMarkers\(repositoryPolicy\)/u);
   assert.match(template, /validatePublishablePathDependencies: true/u);
-  assert.match(template, /version: "0\.6\.0"/u);
+  assert.match(template, /version: "0\.6\.1"/u);
   assert.match(template, /version: "0\.13\.2"/u);
   assert.match(template, /REPLACE_SECRET_BYTE_FIELD/u);
   assert.doesNotMatch(template, /requireTrackedFiles: false/u);
@@ -3590,7 +3810,7 @@ test("vendored core policy rejects assertions hidden in strings", () => {
   const root = createTrackedFixture();
   writeFileSync(
     join(root, "scripts", "release-readiness", "core.mjs"),
-    `export const RELEASE_READINESS_VERSION = "0.6.0";
+    `export const RELEASE_READINESS_VERSION = "0.6.1";
 const assertReallyMeVendoredCorePolicy = () => {
   "assertGeneratedArtifactsFresh";
   "assertGeneratedProtoHardeningPolicy";

@@ -34,8 +34,8 @@ if (packageJson.license !== "MIT OR Apache-2.0") {
 if (packageJson.version !== RELEASE_READINESS_VERSION) {
   fail("package version must match the shared core release version");
 }
-if (RELEASE_READINESS_VERSION !== "0.6.0") {
-  fail("package version must remain 0.6.0 for this release");
+if (RELEASE_READINESS_VERSION !== "0.6.1") {
+  fail("package version must remain 0.6.1 for this release");
 }
 if (
   JSON.stringify(packageJson.files) !==
@@ -56,7 +56,7 @@ for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]
   }
 }
 
-assertContains("core.mjs", 'RELEASE_READINESS_VERSION = "0.6.0"');
+assertContains("core.mjs", 'RELEASE_READINESS_VERSION = "0.6.1"');
 assertNotContains("core.mjs", "RELEASE_READINESS_CORE_CONTRACT_VERSION");
 assertContains("package.json", '"reallyme-release-readiness": "scripts/run-consumer-check.mjs"');
 assertContains("scripts/run-consumer-check.mjs", "timingSafeEqual");
@@ -72,12 +72,50 @@ assertContains("README.md", "assertSwiftSourcePolicy");
 assertContains("README.md", "assertKotlinSourcePolicy");
 assertContains("README.md", "docs/repository-shapes.md");
 assertContains("docs/repository-shapes.md", "consistent directory grammar");
-assertContains("docs/repository-shapes.md", '`runtime-composition`');
-assertContains("docs/repository-shapes.md", '`infrastructure`');
-assertContains("docs/repository-shapes.md", '`application`');
-assertContains("docs/repository-shapes.md", '`application-collection`');
-assertContains("docs/repository-shapes.md", '`taxonomy`');
-assertContains("docs/repository-shapes.md", '`documentation-site`');
+const repositoryArchetypes = [
+  "foundational-library",
+  "protocol-engine",
+  "developer-platform",
+  "application",
+  "application-collection",
+  "product-workspace",
+  "hosted-service",
+  "platform-workspace",
+  "runtime-composition",
+  "infrastructure",
+  "conformance-suite",
+  "taxonomy",
+  "documentation-site",
+  "tooling",
+];
+for (const archetype of repositoryArchetypes) {
+  assertContains("core.mjs", `"${archetype}": {`);
+  assertContains("docs/repository-shapes.md", `| \`${archetype}\` |`);
+}
+assertContains("docs/repository-shapes.md", "## Choosing an Application Archetype");
+assertContains("docs/repository-shapes.md", "## Facade Role");
+assertContains("docs/repository-shapes.md", "## Cargo Crate Roles");
+assertContains("docs/repository-shapes.md", "Select exactly one archetype");
+assertContains("docs/repository-shapes.md", "apps/<app>/contract/proto");
+const cargoCrateRoles = [
+  "adapter",
+  "domain",
+  "facade",
+  "proto",
+  "proto-codec",
+  "provider",
+  "runtime",
+  "storage",
+  "support",
+  "test-support",
+  "transport",
+];
+for (const role of cargoCrateRoles) {
+  assertContains("core.mjs", `"${role}"`);
+  assertContains("docs/repository-shapes.md", `| \`${role}\` |`);
+}
+assertContains("core.mjs", "permits at most one facade crate");
+assertContains("core.mjs", "requires at least two application sublanes");
 assertContains(
   "docs/repository-shapes.md",
   "cannot decide whether a conversion boundary",
@@ -149,7 +187,7 @@ assertContains("README.md", "retired-path enforcement");
 assertContains("README.md", "buf generate");
 assertContains("README.md", "harden-generated-example-proto.mjs");
 assertContains("README.md", "actions/workflows/checks.yml/badge.svg");
-assertContains("README.md", 'RELEASE_READINESS_VERSION = "0.6.0"');
+assertContains("README.md", 'RELEASE_READINESS_VERSION = "0.6.1"');
 assertContains("core.mjs", "scalarFieldClassifications");
 assertContains("core.mjs", "unclassified protobuf scalar field");
 assertContains("templates/check_release_readiness.mjs", "scalarFieldClassifications");
@@ -178,7 +216,7 @@ assertContains(
   "reallyMeLatestStableDependencies: true",
 );
 assertContains("templates/check_release_readiness.mjs", "rustSource: {");
-assertContains("templates/check_release_readiness.mjs", 'version: "0.6.0"');
+assertContains("templates/check_release_readiness.mjs", 'version: "0.6.1"');
 assertContains("templates/check_release_readiness.mjs", "repositoryShape: {");
 assertContains("templates/check_release_readiness.mjs", 'archetype: "protocol-engine"');
 assertContains("templates/check_release_readiness.mjs", "typescriptSource: {");

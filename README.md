@@ -9,7 +9,7 @@
 
 </div>
 
-This package contains a small, dependency-free Node.js core used by ReallyMe
+This package contains a dependency-free Node.js core used by ReallyMe
 release scripts. Sister repositories can vendor the core byte-for-byte for
 offline local use. Remote CI should execute the current shared repository
 runner so policy fixes do not remain trapped in stale local copies.
@@ -39,7 +39,10 @@ runner so policy fixes do not remain trapped in stale local copies.
   infrastructure profiles keep executable hosting separate from deployment
   intent and operational control. Application and application-collection
   profiles distinguish an independently released application from a repository
-  containing several independently bounded applications. Taxonomy,
+  containing several independently bounded applications. Product-workspace
+  profiles cover several cooperating applications that jointly implement one
+  product and share domain or protocol foundations. Facades are optional crate
+  roles rather than separate repository archetypes. Taxonomy,
   conformance-suite, and documentation-site profiles separate canonical data,
   executable verification, evidence, and rendered documentation.
 - SPDX headers for tracked source files, with typed generated/vendored/
@@ -63,7 +66,7 @@ current marker is:
 ```js
 assertContains(
   "scripts/release-readiness/core.mjs",
-  'RELEASE_READINESS_VERSION = "0.6.0"',
+  'RELEASE_READINESS_VERSION = "0.6.1"',
 );
 ```
 

@@ -11,7 +11,7 @@ import { spawnSync } from "node:child_process";
 // This module is intentionally written as a standalone, vendorable release
 // readiness core. Sister repositories should copy it byte-for-byte or consume a
 // pinned upstream revision so release-critical checks do not drift silently.
-export const RELEASE_READINESS_VERSION = "0.6.0";
+export const RELEASE_READINESS_VERSION = "0.6.1";
 
 const DEFAULT_FAILURE_PREFIX = "release readiness check failed";
 const MAX_PRODUCTION_SOURCE_LINES = 500;
@@ -1447,7 +1447,7 @@ export function createReleaseReadinessContext(options) {
           "gradle",
         ],
       },
-      application: {
+      "application": {
         required: ["crates", "contracts", "conformance", "docs", "scripts", ".github"],
         permitted: [
           "crates",
@@ -1479,6 +1479,26 @@ export function createReleaseReadinessContext(options) {
           "scripts",
           ".github",
           ".cargo",
+        ],
+      },
+      "product-workspace": {
+        required: ["apps", "crates", "conformance", "docs", "scripts", ".github"],
+        permitted: [
+          "apps",
+          "crates",
+          "bindings",
+          "gen",
+          "packages",
+          "contracts",
+          "conformance",
+          "vectors",
+          "fuzz",
+          "examples",
+          "docs",
+          "scripts",
+          ".github",
+          ".cargo",
+          "deploy",
         ],
       },
       "hosted-service": {
@@ -1561,7 +1581,7 @@ export function createReleaseReadinessContext(options) {
           "docker",
         ],
       },
-      infrastructure: {
+      "infrastructure": {
         required: [
           "deployments",
           "operations",
@@ -1618,7 +1638,7 @@ export function createReleaseReadinessContext(options) {
           "evidence",
         ],
       },
-      taxonomy: {
+      "taxonomy": {
         required: [
           "taxonomy",
           "schema",
@@ -1659,7 +1679,7 @@ export function createReleaseReadinessContext(options) {
           ".github",
         ],
       },
-      tooling: {
+      "tooling": {
         required: ["test", "docs", "scripts", ".github"],
         permitted: [
           "contracts",
@@ -1823,6 +1843,7 @@ export function createReleaseReadinessContext(options) {
       ...(archetype === "hosted-service" ? ["services"] : []),
       ...(archetype === "taxonomy" ? ["views"] : []),
       ...(archetype === "documentation-site" ? ["content"] : []),
+      ...(archetype === "product-workspace" ? ["apps"] : []),
       ...(archetype === "platform-workspace"
         ? ["apps", "kits", "servers", "workers"]
         : archetype === "application-collection"
@@ -1844,6 +1865,13 @@ export function createReleaseReadinessContext(options) {
         new Set(children).size !== children.length
       ) {
         fail(`repository shape ${parent} sublanes must be a non-empty array of unique names`);
+      }
+      if (
+        parent === "apps" &&
+        (archetype === "application-collection" || archetype === "product-workspace") &&
+        children.length < 2
+      ) {
+        fail(`repository shape ${archetype} requires at least two application sublanes`);
       }
       if (!observedRootLanes.has(parent)) {
         fail(`repository shape ${parent} sublanes are configured for an absent lane`);
@@ -1876,6 +1904,7 @@ export function createReleaseReadinessContext(options) {
     const crateRoles = new Set([
       "adapter",
       "domain",
+      "facade",
       "proto",
       "proto-codec",
       "provider",
@@ -1939,6 +1968,19 @@ export function createReleaseReadinessContext(options) {
     }
     const protoCrates = [...declaredCrates].filter(([, role]) => role === "proto");
     const protoCodecCrates = [...declaredCrates].filter(([, role]) => role === "proto-codec");
+    const facadeCrates = [...declaredCrates].filter(([, role]) => role === "facade");
+    if (facadeCrates.length > 1) {
+      fail("repository shape permits at most one facade crate");
+    }
+    if (
+      facadeCrates.length === 1 &&
+      !governedFiles.some(
+        (path) =>
+          path.endsWith("/Cargo.toml") && path !== `${facadeCrates[0][0]}/Cargo.toml`,
+      )
+    ) {
+      fail("repository shape facade crate requires at least one internal package");
+    }
     if (protoCrates.length > 1 || protoCodecCrates.length > 1) {
       fail("repository shape permits at most one proto and one proto-codec crate");
     }
@@ -1971,17 +2013,13 @@ export function createReleaseReadinessContext(options) {
       usesAppOwnedProto &&
       protoFiles.some((path) => {
         const expectedPattern =
-          archetype === "application-collection"
-            ? /^apps\/[A-Za-z0-9][A-Za-z0-9_.-]*\/contracts\/proto\/.+[.]proto$/u
-            : /^apps\/[A-Za-z0-9][A-Za-z0-9_.-]*\/contract\/proto\/.+[.]proto$/u;
+          /^apps\/[A-Za-z0-9][A-Za-z0-9_.-]*\/contract\/proto\/.+[.]proto$/u;
         return !expectedPattern.test(path);
       })
     ) {
-      const expectedPath =
-        archetype === "application-collection"
-          ? "apps/<app>/contracts/proto"
-          : "apps/<app>/contract/proto";
-      fail(`repository shape ${archetype} requires protobuf schemas in ${expectedPath}`);
+      fail(
+        `repository shape ${archetype} requires protobuf schemas in apps/<app>/contract/proto`,
+      );
     }
     if (
       governedFiles.some(

@@ -68,6 +68,11 @@ Repository-shape validation is intentionally opt-in. Map the repository using
 complete `repositoryShape` in the checker. The policy enforces declared lanes,
 crate roles, proto placement, sublanes, and typed exceptions; architectural
 review still decides whether a `proto-codec` conversion boundary is justified.
+Choose `application` for one independently released application,
+`application-collection` for independent applications merely colocated in one
+repository, and `product-workspace` for cooperating applications that implement
+one product and share a compatibility boundary. A facade is optional in every
+case and is declared with the `facade` crate role.
 
 If a repository chooses a target below an applicable hard ceiling, it may set
 `baselinePath` to a tracked TSV for existing files between the two limits. Each
