@@ -19,6 +19,7 @@ const {
   assertWorkflowUsesStep,
   fail,
   readJson,
+  readText,
 } = createReleaseReadinessContext({
   scriptUrl: import.meta.url,
   requireTrackedFiles: false,
@@ -34,8 +35,8 @@ if (packageJson.license !== "MIT OR Apache-2.0") {
 if (packageJson.version !== RELEASE_READINESS_VERSION) {
   fail("package version must match the shared core release version");
 }
-if (RELEASE_READINESS_VERSION !== "0.6.2") {
-  fail("package version must remain 0.6.2 for this release");
+if (RELEASE_READINESS_VERSION !== "0.6.3") {
+  fail("package version must remain 0.6.3 for this release");
 }
 if (
   JSON.stringify(packageJson.files) !==
@@ -56,7 +57,7 @@ for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]
   }
 }
 
-assertContains("core.mjs", 'RELEASE_READINESS_VERSION = "0.6.2"');
+assertContains("core.mjs", 'RELEASE_READINESS_VERSION = "0.6.3"');
 assertNotContains("core.mjs", "RELEASE_READINESS_CORE_CONTRACT_VERSION");
 assertContains("package.json", '"reallyme-release-readiness": "scripts/run-consumer-check.mjs"');
 assertContains("scripts/run-consumer-check.mjs", "timingSafeEqual");
@@ -165,7 +166,7 @@ assertContains("core.mjs", "assertReallyMeOperationBoundaryContract");
 assertContains("core.mjs", "assertGranularProviderBoundary");
 assertContains("core.mjs", "assertPathsAbsent");
 assertContains("core.mjs", "provider request and result oneofs must contain only declared granular operations");
-assertContains("core.mjs", "lstat observes broken symlinks");
+assertContains("core.mjs", "lstatSync(absolute);");
 assertContains("core.mjs", "requiredCodecNeedles");
 assertContains("core.mjs", "forbiddenCodecNeedles");
 assertContains("core.mjs", "assertNodeWorkflowJobsPinNode");
@@ -179,14 +180,7 @@ assertContains("LICENSE-APACHE", "Apache License");
 assertContains("LICENSE-APACHE", "Version 2.0, January 2004");
 assertContains("LICENSE-MIT", "MIT License");
 assertContains("LICENSE-MIT", "Copyright (c) 2026 ReallyMe LLC");
-assertContains(
-  ".github/workflows/checks.yml",
-  "SPDX-FileCopyrightText: 2026 ReallyMe LLC",
-);
-assertContains(
-  ".github/workflows/checks.yml",
-  "SPDX-License-Identifier: MIT OR Apache-2.0",
-);
+assertSpdxHeaders();
 assertContains(
   ".github/workflows/checks.yml",
   "node-version: \"24\"",
@@ -197,76 +191,57 @@ assertContains("README.md", "retired-path enforcement");
 assertContains("README.md", "buf generate");
 assertContains("README.md", "harden-generated-example-proto.mjs");
 assertContains("README.md", "actions/workflows/checks.yml/badge.svg");
-assertContains("README.md", 'RELEASE_READINESS_VERSION = "0.6.2"');
+assertContains("README.md", 'RELEASE_READINESS_VERSION = "0.6.3"');
 assertContains("core.mjs", "scalarFieldClassifications");
 assertContains("core.mjs", "unclassified protobuf scalar field");
-assertContains("templates/check_release_readiness.mjs", "scalarFieldClassifications");
+const templatePath = "templates/check_release_readiness.mjs";
+const templateSource = readText(templatePath);
+const assertTemplateContains = (needle) => {
+  if (!templateSource.includes(needle)) {
+    fail(`${templatePath} does not contain ${needle}`);
+  }
+};
+assertTemplateContains("scalarFieldClassifications");
 assertContains("README.md", "outside the declared generated directories");
 assertContains("README.md", "neither sparse nor sequential numbering");
 assertContains("README.md", 'sensitivity: "sensitive"');
 assertContains("README.md", "templates/check_release_readiness.mjs");
-assertContains(
-  "templates/check_release_readiness.mjs",
+for (const needle of [
   "assertReallyMeRustProtoRepositoryPolicy",
-);
-assertContains(
-  "templates/check_release_readiness.mjs",
   "requireTrackedFiles: true",
-);
-assertContains(
-  "templates/check_release_readiness.mjs",
   "assertNoTemplateMarkers(repositoryPolicy)",
-);
-assertContains(
-  "templates/check_release_readiness.mjs",
   "validatePublishablePathDependencies: true",
-);
-assertContains(
-  "templates/check_release_readiness.mjs",
   "reallyMeLatestStableDependencies: true",
-);
-assertContains("templates/check_release_readiness.mjs", "rustSource: {");
-assertContains("templates/check_release_readiness.mjs", 'version: "0.6.2"');
-assertContains("templates/check_release_readiness.mjs", "repositoryShape: {");
-assertContains("templates/check_release_readiness.mjs", 'archetype: "protocol-engine"');
-assertContains("templates/check_release_readiness.mjs", "typescriptSource: {");
-assertContains("templates/check_release_readiness.mjs", "swiftSource: {");
-assertContains("templates/check_release_readiness.mjs", "kotlinSource: {");
-assertContains("templates/check_release_readiness.mjs", "staticAnalysis: {");
-assertContains(
-  "templates/check_release_readiness.mjs",
+  "rustSource: {",
+  'version: "0.6.3"',
+  "repositoryShape: {",
+  'archetype: "protocol-engine"',
+  "typescriptSource: {",
+  "swiftSource: {",
+  "kotlinSource: {",
+  "staticAnalysis: {",
   '"@typescript-eslint/consistent-type-assertions"',
-);
-assertContains("templates/check_release_readiness.mjs", 'roots: ["."]');
-assertContains("templates/check_release_readiness.mjs", "productionHardLines: 500");
-assertContains("templates/check_release_readiness.mjs", "testTargetLines: 800");
-assertContains("templates/check_release_readiness.mjs", "testHardLines: 800");
-assertContains("templates/check_release_readiness.mjs", "forbidInlineTests: true");
-assertContains("templates/check_release_readiness.mjs", "forbidSubstantiveFacades: true");
-assertContains("templates/check_release_readiness.mjs", "forbidPanickingProductionCode: true");
-assertContains("templates/check_release_readiness.mjs", "forbidDynamicErrorSurfaces: true");
-assertContains("templates/check_release_readiness.mjs", 'roles: ["typecheck", "lint", "test"]');
-assertContains(
-  "templates/check_release_readiness.mjs",
+  'roots: ["."]',
+  "productionHardLines: 500",
+  "testTargetLines: 800",
+  "testHardLines: 800",
+  "forbidInlineTests: true",
+  "forbidSubstantiveFacades: true",
+  "forbidPanickingProductionCode: true",
+  "forbidDynamicErrorSurfaces: true",
+  'roles: ["typecheck", "lint", "test"]',
   'roles: ["format", "lint", "build", "test"]',
-);
-assertContains(
-  "templates/check_release_readiness.mjs",
   'roles: ["format", "static-analysis", "compile", "test"]',
-);
-assertContains("templates/check_release_readiness.mjs", "requireExclusionsMatched: true");
-assertContains("templates/check_release_readiness.mjs", "requireExclusionReasons: true");
-assertContains("templates/check_release_readiness.mjs", "granularProviderBoundary");
-assertContains("templates/check_release_readiness.mjs", "operations: [");
-assertContains("templates/check_release_readiness.mjs", "retiredPaths: []");
-assertContains(
-  "templates/check_release_readiness.mjs",
-  'requiredInstallSteps: [',
-);
-assertContains(
-  "templates/check_release_readiness.mjs",
+  "requireExclusionsMatched: true",
+  "requireExclusionReasons: true",
+  "granularProviderBoundary",
+  "operations: [",
+  "retiredPaths: []",
+  "requiredInstallSteps: [",
   "node scripts/check_release_readiness.mjs --generated-freshness",
-);
+]) {
+  assertTemplateContains(needle);
+}
 assertNotContains(
   "templates/check_release_readiness.mjs",
   "requireTrackedFiles: false",

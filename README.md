@@ -67,7 +67,7 @@ current marker is:
 ```js
 assertContains(
   "scripts/release-readiness/core.mjs",
-  'RELEASE_READINESS_VERSION = "0.6.2"',
+  'RELEASE_READINESS_VERSION = "0.6.3"',
 );
 ```
 

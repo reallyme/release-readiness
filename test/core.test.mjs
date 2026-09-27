@@ -591,6 +591,26 @@ test("workflow and text policies accept pinned, exact repository inputs", () => 
   assert.equal(steps[1].name, "Run check");
 });
 
+test("required text ignores comments while preserving quoted configuration values", () => {
+  const root = createFixture();
+  writeFileSync(
+    join(root, "comment-policy.yaml"),
+    '# required-active-marker\nvalue: "# quoted-marker"\n',
+  );
+
+  const commentOnly = runFixtureScript(
+    root,
+    'context.assertContains("comment-policy.yaml", "required-active-marker");',
+  );
+  assert.equal(commentOnly.status, 1);
+
+  const quotedValue = runFixtureScript(
+    root,
+    'context.assertContains("comment-policy.yaml", "# quoted-marker");',
+  );
+  assert.equal(quotedValue.status, 0, quotedValue.stderr);
+});
+
 test("cargo metadata policy validates publish and dependency boundaries", () => {
   const root = createFixture();
   const context = createContext(root);
@@ -2746,7 +2766,7 @@ test("Swift source policy accepts typed throws and separately located tests", ()
   mkdirSync(join(root, "Tests", "IdentityTests"), { recursive: true });
   writeFileSync(
     join(root, "Package.swift"),
-    "// StrictConcurrency\n// warnings-as-errors\n",
+    'let strictConcurrency = "StrictConcurrency"\nlet warningsAsErrors = "warnings-as-errors"\n',
   );
   writeFileSync(
     join(root, "Sources", "Identity", "create.swift"),
@@ -2787,7 +2807,7 @@ test("Swift source policy rejects unsafe operations, untyped errors, and escape 
   for (const [source, expected] of cases) {
     const root = createTrackedFixture();
     mkdirSync(join(root, "Sources", "Identity"), { recursive: true });
-    writeFileSync(join(root, "Package.swift"), "// StrictConcurrency\n");
+    writeFileSync(join(root, "Package.swift"), 'let strictConcurrency = "StrictConcurrency"\n');
     writeFileSync(join(root, "Sources", "Identity", "create.swift"), source);
     const gitAdd = spawnSync("git", ["add", "Package.swift", "Sources"], {
       cwd: root,
@@ -3020,7 +3040,7 @@ test("Swift and Kotlin facade policies reject substantive configured entrypoints
     {
       language: "Swift",
       configurationPath: "Package.swift",
-      configurationText: "// StrictConcurrency\n",
+      configurationText: 'let strictConcurrency = "StrictConcurrency"\n',
       sourcePath: "Sources/Identity/Exports.swift",
       source: "public func create() {}\n",
       body: (verification) => `context.assertSwiftSourcePolicy({
@@ -3078,7 +3098,7 @@ test("language source policies ignore forbidden tokens inside string literals", 
     join(root, "typescript", "create.ts"),
     'export const marker = "// @ts-ignore any throw new Error";\n',
   );
-  writeFileSync(join(root, "Package.swift"), "// StrictConcurrency\n");
+  writeFileSync(join(root, "Package.swift"), 'let strictConcurrency = "StrictConcurrency"\n');
   writeFileSync(
     join(root, "swift", "create.swift"),
     'let marker = "// swiftlint:disable all try! fatalError()"\n',
@@ -3229,8 +3249,8 @@ fn codec_error() {}
   );
   writeFileSync(
     join(root, "swift.swift"),
-    `// OperationResponse
-// ZEROIZING_OUTPUT
+    `private let operationResponseType = "OperationResponse"
+private let zeroizingOutput = "ZEROIZING_OUTPUT"
 public func processOperation(_ request: [UInt8]) {}
 public func processOperationJson(_ requestJson: [UInt8]) {}
 `,
@@ -3253,7 +3273,7 @@ public func processOperationJson(_ requestJson: [UInt8]) {}
         processOperationNeedle: "public func processOperation(_ request: [UInt8])",
         processOperationJsonNeedle:
           "public func processOperationJson(_ requestJson: [UInt8])",
-        requiredNeedles: ["// ZEROIZING_OUTPUT"],
+        requiredNeedles: ['private let zeroizingOutput = "ZEROIZING_OUTPUT"'],
       },
     ],
   });
@@ -3672,7 +3692,7 @@ test("local checker template is syntactically valid and fails closed by construc
   assert.match(template, /assertReallyMeRustProtoRepositoryPolicy/u);
   assert.match(template, /assertNoTemplateMarkers\(repositoryPolicy\)/u);
   assert.match(template, /validatePublishablePathDependencies: true/u);
-  assert.match(template, /version: "0\.6\.2"/u);
+  assert.match(template, /version: "0\.6\.3"/u);
   assert.match(template, /version: "0\.13\.2"/u);
   assert.match(template, /REPLACE_SECRET_BYTE_FIELD/u);
   assert.doesNotMatch(template, /requireTrackedFiles: false/u);
@@ -3954,7 +3974,7 @@ test("vendored core policy rejects assertions hidden in strings", () => {
   const root = createTrackedFixture();
   writeFileSync(
     join(root, "scripts", "release-readiness", "core.mjs"),
-    `export const RELEASE_READINESS_VERSION = "0.6.2";
+    `export const RELEASE_READINESS_VERSION = "0.6.3";
 const assertReallyMeVendoredCorePolicy = () => {
   "assertGeneratedArtifactsFresh";
   "assertGeneratedProtoHardeningPolicy";
