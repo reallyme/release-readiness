@@ -4,7 +4,6 @@
 
 import assert from "node:assert/strict";
 import {
-  copyFileSync,
   mkdtempSync,
   mkdirSync,
   symlinkSync,
@@ -18,12 +17,10 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 const runnerPath = fileURLToPath(new URL("../scripts/run-consumer-check.mjs", import.meta.url));
-const corePath = fileURLToPath(new URL("../core.mjs", import.meta.url));
 
 const createConsumer = () => {
   const root = mkdtempSync(join(tmpdir(), "reallyme-release-runner-"));
-  mkdirSync(join(root, "scripts", "release-readiness"), { recursive: true });
-  copyFileSync(corePath, join(root, "scripts", "release-readiness", "core.mjs"));
+  mkdirSync(join(root, "scripts"), { recursive: true });
   writeFileSync(
     join(root, "scripts", "check_release_readiness.mjs"),
     "process.exit(0);\n",
@@ -41,18 +38,24 @@ const runConsumer = (root) =>
     encoding: "utf8",
   });
 
-test("runner accepts an identical vendored core", () => {
+test("runner accepts a consumer without a vendored core", () => {
   const root = createConsumer();
   const result = runConsumer(root);
   assert.equal(result.status, 0, result.stderr);
 });
 
-test("runner rejects a modified vendored core", () => {
+test("runner supplies its immutable package core to the consumer", () => {
   const root = createConsumer();
-  writeFileSync(join(root, "scripts", "release-readiness", "core.mjs"), "modified\n");
+  writeFileSync(
+    join(root, "scripts", "check_release_readiness.mjs"),
+    `const coreUrl = process.env.RELEASE_READINESS_CORE_URL;
+if (typeof coreUrl !== "string") process.exit(2);
+const { RELEASE_READINESS_VERSION } = await import(coreUrl);
+if (RELEASE_READINESS_VERSION !== "0.6.4") process.exit(3);
+`,
+  );
   const result = runConsumer(root);
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /shared core does not match the pinned package/u);
+  assert.equal(result.status, 0, result.stderr);
 });
 
 test("runner rejects a symlinked consumer checker", () => {
@@ -88,7 +91,9 @@ test("runner accepts a successfully enforced shared source policy", () => {
   writeFileSync(join(root, "implementation.rs"), "pub fn create() {}\n");
   writeFileSync(
     join(root, "scripts", "check_release_readiness.mjs"),
-    `import { createReleaseReadinessContext } from "./release-readiness/core.mjs";
+    `const { createReleaseReadinessContext } = await import(
+  process.env.RELEASE_READINESS_CORE_URL,
+);
 const context = createReleaseReadinessContext({
   scriptUrl: import.meta.url,
   requireTrackedFiles: true,

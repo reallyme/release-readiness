@@ -3,11 +3,10 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { createHash, timingSafeEqual } from "node:crypto";
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { RELEASE_READINESS_VERSION } from "../core.mjs";
 
@@ -22,18 +21,17 @@ const failure = (message) => {
 
 let repositoryRoot;
 let checkerPath;
-let vendoredCorePath;
 let upstreamCorePath;
 try {
   repositoryRoot = realpathSync(process.cwd());
   checkerPath = resolve(repositoryRoot, "scripts/check_release_readiness.mjs");
-  vendoredCorePath = resolve(repositoryRoot, "scripts/release-readiness/core.mjs");
   upstreamCorePath = fileURLToPath(new URL("../core.mjs", import.meta.url));
 
-  for (const [description, path, maximumBytes] of [
-    ["consumer checker", checkerPath, MAX_CHECKER_BYTES],
-    ["vendored core", vendoredCorePath, MAX_SHARED_CORE_BYTES],
-  ]) {
+  for (const [description, path, maximumBytes] of [[
+    "consumer checker",
+    checkerPath,
+    MAX_CHECKER_BYTES,
+  ]]) {
     const repositoryRelativePath = relative(repositoryRoot, path);
     if (
       repositoryRelativePath === ".." ||
@@ -63,13 +61,6 @@ try {
   failure("consumer repository or shared core is missing or inaccessible");
 }
 
-const digest = (value) => createHash("sha256").update(value).digest();
-const vendoredDigest = digest(readFileSync(vendoredCorePath));
-const upstreamDigest = digest(readFileSync(upstreamCorePath));
-if (!timingSafeEqual(vendoredDigest, upstreamDigest)) {
-  failure("shared core does not match the pinned package");
-}
-
 const trackedFilesResult = spawnSync("git", ["ls-files", "-z"], {
   cwd: repositoryRoot,
   encoding: "utf8",
@@ -96,6 +87,7 @@ const result = spawnSync(process.execPath, [checkerPath, ...process.argv.slice(2
   cwd: repositoryRoot,
   env: {
     ...process.env,
+    RELEASE_READINESS_CORE_URL: pathToFileURL(upstreamCorePath).href,
     RELEASE_READINESS_ENFORCED_VERSION: RELEASE_READINESS_VERSION,
     RELEASE_READINESS_SOURCE_POLICY_FD: "3",
   },

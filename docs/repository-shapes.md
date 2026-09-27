@@ -386,10 +386,10 @@ The checker enforces the following structural rules:
 - An `application-collection` and a `product-workspace` each declare at least
   two immediate application sublanes. A repository with one independently
   released application uses `application`.
-- Consumer repositories retain the local checker and vendored shared core under
-  `scripts/`. Only the `tooling` archetype may set `requireReleaseReadiness` to
-  `false`, allowing this package to validate its source core rather than vendor
-  a copy of itself.
+- Consumer repositories retain the local checker under `scripts/` and load the
+  immutable shared core supplied by the pinned public runner. Only the
+  `tooling` archetype may set `requireReleaseReadiness` to `false`, allowing
+  this package to validate its own source directly.
 - Additional repository-specific retired paths may be declared in
   `forbiddenPaths`.
 

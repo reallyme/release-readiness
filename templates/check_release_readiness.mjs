@@ -3,7 +3,12 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { createReleaseReadinessContext } from "./release-readiness/core.mjs";
+const coreUrl = process.env.RELEASE_READINESS_CORE_URL;
+if (typeof coreUrl !== "string" || coreUrl.length === 0) {
+  console.error("release readiness check failed: pinned core URL is unavailable");
+  process.exit(1);
+}
+const { createReleaseReadinessContext } = await import(coreUrl);
 
 const context = createReleaseReadinessContext({
   scriptUrl: import.meta.url,
@@ -23,10 +28,9 @@ const generatedFreshnessMode = process.argv.includes("--generated-freshness");
 // repository-specific facts here instead of forking shared policy logic.
 const repositoryPolicy = {
   generatedFreshnessMode,
-  vendoredCore: {
+  releasePackage: {
     scriptPath: "scripts/check_release_readiness.mjs",
-    corePath: "scripts/release-readiness/core.mjs",
-    version: "0.6.3",
+    version: "0.6.4",
   },
   workflowActions: {},
   nodeWorkflows: {

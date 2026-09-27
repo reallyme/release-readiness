@@ -3,11 +3,9 @@
 Use this template for a ReallyMe Rust repository that owns an executable
 protobuf/ProtoJSON adapter lane.
 
-Install both files from the same reviewed central revision:
+Install the checker from the reviewed central revision:
 
 ```sh
-mkdir -p scripts/release-readiness
-cp ../release-readiness/core.mjs scripts/release-readiness/core.mjs
 cp ../release-readiness/templates/check_release_readiness.mjs scripts/check_release_readiness.mjs
 ```
 
@@ -19,8 +17,8 @@ file to every consumer.
 The template enables the following mandatory baseline through
 `assertReallyMeRustProtoRepositoryPolicy`:
 
-- the checker and vendored core are Git-tracked and use the package's exact
-  semantic release version;
+- the checker is Git-tracked and imports the immutable core supplied by the
+  package runner at its exact semantic release version;
 - GitHub Actions are pinned to immutable commits and Node jobs use Node 24;
 - cargo-fuzz installs are exact-version pinned, locked, and present in both
   pull-request and scheduled fuzz lanes through named workflow steps;

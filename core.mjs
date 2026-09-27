@@ -8,10 +8,10 @@ import { extname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
-// This module is intentionally written as a standalone, vendorable release
-// readiness core. Sister repositories should copy it byte-for-byte or consume a
-// pinned upstream revision so release-critical checks do not drift silently.
-export const RELEASE_READINESS_VERSION = "0.6.3";
+// This module is the release package's shared policy core. The public runner
+// supplies this exact immutable module to consumers so release-critical checks
+// cannot drift independently from the pinned package revision.
+export const RELEASE_READINESS_VERSION = "0.6.4";
 
 const DEFAULT_FAILURE_PREFIX = "release readiness check failed";
 const MAX_PRODUCTION_SOURCE_LINES = 500;
@@ -464,7 +464,7 @@ const scrubHashCommentsPreservingStrings = (source) =>
 const scrubHtmlComments = (source) => source.replace(/<!--[\s\S]*?-->/gu, (comment) =>
   comment.replace(/[^\n]/gu, " "));
 
-const scrubCommentsForAssertion = (path, source) => {
+export const scrubCommentsForAssertion = (path, source) => {
   const extension = extname(path).toLowerCase();
   if ([".js", ".jsx", ".mjs", ".mts", ".ts", ".tsx"].includes(extension)) {
     return scrubJavaScriptCommentsAndStrings(source, { preserveStrings: true });
@@ -699,8 +699,26 @@ export function createReleaseReadinessContext(options) {
   };
 
   if (requireTrackedFiles) {
-    const corePath = relative(root, fileURLToPath(import.meta.url)).replaceAll("\\", "/");
-    requireTracked(corePath);
+    const coreAbsolutePath = realpathSync(fileURLToPath(import.meta.url));
+    const corePath = relative(root, coreAbsolutePath).replaceAll("\\", "/");
+    if (corePath === ".." || corePath.startsWith("../") || isAbsolute(corePath)) {
+      let enforcedCorePath;
+      try {
+        enforcedCorePath = realpathSync(
+          fileURLToPath(new URL(process.env.RELEASE_READINESS_CORE_URL)),
+        );
+      } catch {
+        fail("external release-readiness core is not bound to the pinned runner");
+      }
+      if (
+        enforcedCorePath !== coreAbsolutePath ||
+        process.env.RELEASE_READINESS_ENFORCED_VERSION !== RELEASE_READINESS_VERSION
+      ) {
+        fail("external release-readiness core is not bound to the pinned runner");
+      }
+    } else {
+      requireTracked(corePath);
+    }
   }
 
   const readText = (path) => {
@@ -2198,7 +2216,6 @@ export function createReleaseReadinessContext(options) {
 
     if (requireReleaseReadiness) {
       requireTracked("scripts/check_release_readiness.mjs");
-      requireTracked("scripts/release-readiness/core.mjs");
     }
   };
 
@@ -3717,6 +3734,24 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     }
   };
 
+  const assertReallyMeReleasePackagePolicy = (policy = {}) => {
+    if (policy === null || typeof policy !== "object" || Array.isArray(policy)) {
+      fail("release package policy must be an object");
+    }
+    const {
+      scriptPath = "scripts/check_release_readiness.mjs",
+      version = RELEASE_READINESS_VERSION,
+    } = policy;
+    if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/u.test(version)) {
+      fail("release-readiness version must be an exact semantic version");
+    }
+    if (process.env.RELEASE_READINESS_ENFORCED_VERSION !== version) {
+      fail(`release-readiness runner must enforce version ${version}`);
+    }
+    requireTracked(scriptPath);
+    assertContains(scriptPath, "RELEASE_READINESS_CORE_URL");
+  };
+
   const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 
   const assertNodeWorkflowJobsPinNode = (workflowOptions = {}) => {
@@ -4543,7 +4578,8 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     }
     const {
       generatedFreshnessMode,
-      vendoredCore = {},
+      releasePackage,
+      vendoredCore,
       workflowActions = {},
       nodeWorkflows = {},
       cargoFuzz,
@@ -4565,8 +4601,14 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     if (typeof generatedFreshnessMode !== "boolean") {
       fail("ReallyMe Rust protobuf repository policy requires generatedFreshnessMode");
     }
+    if (releasePackage !== undefined && vendoredCore !== undefined) {
+      fail("ReallyMe Rust protobuf repository policy must select one release-readiness source");
+    }
+    const selectedVendoredCore =
+      releasePackage === undefined && vendoredCore === undefined ? {} : vendoredCore;
     for (const [name, value] of [
-      ["vendoredCore", vendoredCore],
+      ["releasePackage", releasePackage],
+      ["vendoredCore", selectedVendoredCore],
       ["workflowActions", workflowActions],
       ["nodeWorkflows", nodeWorkflows],
       ["cargoFuzz", cargoFuzz],
@@ -4575,7 +4617,10 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
       ["protobufBoundary", protobufBoundary],
       ["protobufRelease", protobufRelease],
     ]) {
-      if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      if (
+        value !== undefined &&
+        (value === null || typeof value !== "object" || Array.isArray(value))
+      ) {
         fail(`ReallyMe Rust protobuf repository policy ${name} must be an object`);
       }
     }
@@ -4649,7 +4694,11 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
       );
     }
 
-    assertReallyMeVendoredCorePolicy(vendoredCore);
+    if (releasePackage !== undefined) {
+      assertReallyMeReleasePackagePolicy(releasePackage);
+    } else {
+      assertReallyMeVendoredCorePolicy(selectedVendoredCore);
+    }
     assertWorkflowActionsPinned(workflowActions);
     assertNodeWorkflowJobsPinNode(nodeWorkflows);
     assertCargoFuzzWorkflowPolicy(cargoFuzz);
@@ -5327,6 +5376,7 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     assertGeneratedArtifactsFresh,
     assertGeneratedProtoHardeningPolicy,
     assertReallyMeProtobufReleasePolicy,
+    assertReallyMeReleasePackagePolicy,
     assertReallyMeVendoredCorePolicy,
     assertNodeWorkflowJobsPinNode,
     assertWorkflowActionsPinned,

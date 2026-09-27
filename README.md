@@ -61,19 +61,20 @@ runner so policy fixes do not remain trapped in stale local copies.
   every `bytes` and `string` schema field.
 - Command matrices for repository-specific release suites.
 
-The package, Git release, and vendored core share one semantic version. The
+The package and Git release share one semantic version. Consumer checkers load
+the core supplied by the pinned runner rather than carrying a local copy. The
 current marker is:
 
 ```js
 assertContains(
-  "scripts/release-readiness/core.mjs",
-  'RELEASE_READINESS_VERSION = "0.6.3"',
+  "core.mjs",
+  'RELEASE_READINESS_VERSION = "0.6.4"',
 );
 ```
 
 Numeric core-contract identifiers are no longer supported. Consumer policy,
-the package version, release tag, and vendored-core marker must use the same
-semantic release version.
+the package version, and release tag must use the same semantic release
+version.
 
 ## Usage
 
@@ -85,11 +86,12 @@ npm run check
 
 The GitHub Actions workflow runs the same command on Node 24.
 
-Consumer repositories usually vendor the core into their local release scripts:
+Consumer repositories keep only their repository-specific checker. It loads
+the immutable core path supplied by the runner:
 
-```sh
-cp core.mjs ../crypto/scripts/release-readiness/core.mjs
-cp core.mjs ../cose/scripts/release-readiness/core.mjs
+```js
+const coreUrl = process.env.RELEASE_READINESS_CORE_URL;
+const { createReleaseReadinessContext } = await import(coreUrl);
 ```
 
 Remote CI must pin this repository by a reviewed full commit SHA. Never use a
@@ -101,12 +103,12 @@ npm exec --yes --package=github:reallyme/release-readiness#FULL_COMMIT_SHA -- \
 ```
 
 Arguments after `reallyme-release-readiness` are passed to the consumer's
-`scripts/check_release_readiness.mjs`. The runner requires the tracked vendored
-core to be byte-for-byte identical to its immutable upstream core before it
-runs the consumer checker. It also detects tracked Rust, TypeScript, Swift, and
-Kotlin source and requires the consumer checker to invoke the corresponding
-shared source policy. A repository cannot bypass the source rules by omitting a
-policy call.
+`scripts/check_release_readiness.mjs`. The runner supplies its own immutable
+core through `RELEASE_READINESS_CORE_URL`; the consumer does not vendor or
+modify it. The runner also detects tracked Rust, TypeScript, Swift, and Kotlin
+source and requires the consumer checker to invoke the corresponding shared
+source policy. A repository cannot bypass the source rules by omitting a policy
+call.
 
 For a new Rust/protobuf repository, start from
 [`templates/check_release_readiness.mjs`](templates/check_release_readiness.mjs)
