@@ -11,8 +11,8 @@ cp ../release-readiness/templates/check_release_readiness.mjs scripts/check_rele
 
 Then replace every `REPLACE_*` marker. The checker fails closed while any
 marker remains. Do not copy shared helper implementations into the local
-script; add generally applicable policy to `core.mjs` and propagate that exact
-file to every consumer.
+script; add generally applicable policy to `core.mjs` and publish it through
+the centrally versioned runner.
 
 The template enables the following mandatory baseline through
 `assertReallyMeRustProtoRepositoryPolicy`:

@@ -95,14 +95,34 @@ const { createReleaseReadinessContext } = await import(coreUrl);
 ```
 
 Remote CI must pin this repository by a reviewed full commit SHA. Never use a
-mutable branch or tag in a credential-bearing workflow:
+mutable branch or tag in a credential-bearing workflow. Two invocation modes
+are supported.
+
+An explicit checkout keeps the reviewed package visible in the job workspace:
+
+```yaml
+- name: Checkout release-readiness runner
+  uses: actions/checkout@FULL_ACTION_COMMIT_SHA
+  with:
+    repository: reallyme/release-readiness
+    ref: FULL_RELEASE_READINESS_COMMIT_SHA
+    path: .release-readiness
+    persist-credentials: false
+
+- name: Run release-readiness gates
+  run: node .release-readiness/scripts/run-consumer-check.mjs
+```
+
+Alternatively, npm can execute the package directly from the same reviewed
+commit:
 
 ```sh
 npm exec --yes --package=github:reallyme/release-readiness#FULL_COMMIT_SHA -- \
   reallyme-release-readiness
 ```
 
-Arguments after `reallyme-release-readiness` are passed to the consumer's
+Both modes execute the same package runner. Arguments after
+`reallyme-release-readiness` in npm mode are passed to the consumer's
 `scripts/check_release_readiness.mjs`. The runner supplies its own immutable
 core through `RELEASE_READINESS_CORE_URL`; the consumer does not vendor or
 modify it. The runner also detects tracked Rust, TypeScript, Swift, and Kotlin
