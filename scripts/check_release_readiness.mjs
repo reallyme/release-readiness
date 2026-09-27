@@ -35,8 +35,8 @@ if (packageJson.license !== "MIT OR Apache-2.0") {
 if (packageJson.version !== RELEASE_READINESS_VERSION) {
   fail("package version must match the shared core release version");
 }
-if (RELEASE_READINESS_VERSION !== "0.6.4") {
-  fail("package version must remain 0.6.4 for this release");
+if (RELEASE_READINESS_VERSION !== "0.6.5") {
+  fail("package version must remain 0.6.5 for this release");
 }
 if (
   JSON.stringify(packageJson.files) !==
@@ -57,7 +57,7 @@ for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]
   }
 }
 
-assertContains("core.mjs", 'RELEASE_READINESS_VERSION = "0.6.4"');
+assertContains("core.mjs", 'RELEASE_READINESS_VERSION = "0.6.5"');
 assertNotContains("core.mjs", "RELEASE_READINESS_CORE_CONTRACT_VERSION");
 assertContains("package.json", '"reallyme-release-readiness": "scripts/run-consumer-check.mjs"');
 assertContains("scripts/run-consumer-check.mjs", "RELEASE_READINESS_CORE_URL");
@@ -191,7 +191,7 @@ assertContains("README.md", "retired-path enforcement");
 assertContains("README.md", "buf generate");
 assertContains("README.md", "harden-generated-example-proto.mjs");
 assertContains("README.md", "actions/workflows/checks.yml/badge.svg");
-assertContains("README.md", 'RELEASE_READINESS_VERSION = "0.6.4"');
+assertContains("README.md", 'RELEASE_READINESS_VERSION = "0.6.5"');
 assertContains("core.mjs", "scalarFieldClassifications");
 assertContains("core.mjs", "unclassified protobuf scalar field");
 const templatePath = "templates/check_release_readiness.mjs";
@@ -213,7 +213,7 @@ for (const needle of [
   "validatePublishablePathDependencies: true",
   "reallyMeLatestStableDependencies: true",
   "rustSource: {",
-  'version: "0.6.4"',
+  'version: "0.6.5"',
   "repositoryShape: {",
   'archetype: "protocol-engine"',
   "typescriptSource: {",

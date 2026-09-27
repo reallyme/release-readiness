@@ -11,7 +11,7 @@ import { spawnSync } from "node:child_process";
 // This module is the release package's shared policy core. The public runner
 // supplies this exact immutable module to consumers so release-critical checks
 // cannot drift independently from the pinned package revision.
-export const RELEASE_READINESS_VERSION = "0.6.4";
+export const RELEASE_READINESS_VERSION = "0.6.5";
 
 const DEFAULT_FAILURE_PREFIX = "release readiness check failed";
 const MAX_PRODUCTION_SOURCE_LINES = 500;
@@ -701,12 +701,11 @@ export function createReleaseReadinessContext(options) {
   if (requireTrackedFiles) {
     const coreAbsolutePath = realpathSync(fileURLToPath(import.meta.url));
     const corePath = relative(root, coreAbsolutePath).replaceAll("\\", "/");
-    if (corePath === ".." || corePath.startsWith("../") || isAbsolute(corePath)) {
+    const enforcedCoreUrl = process.env.RELEASE_READINESS_CORE_URL;
+    if (typeof enforcedCoreUrl === "string" && enforcedCoreUrl.length > 0) {
       let enforcedCorePath;
       try {
-        enforcedCorePath = realpathSync(
-          fileURLToPath(new URL(process.env.RELEASE_READINESS_CORE_URL)),
-        );
+        enforcedCorePath = realpathSync(fileURLToPath(new URL(enforcedCoreUrl)));
       } catch {
         fail("external release-readiness core is not bound to the pinned runner");
       }

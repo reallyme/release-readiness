@@ -4,6 +4,7 @@
 
 import assert from "node:assert/strict";
 import {
+  copyFileSync,
   mkdtempSync,
   mkdirSync,
   symlinkSync,
@@ -17,6 +18,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 const runnerPath = fileURLToPath(new URL("../scripts/run-consumer-check.mjs", import.meta.url));
+const corePath = fileURLToPath(new URL("../core.mjs", import.meta.url));
 
 const createConsumer = () => {
   const root = mkdtempSync(join(tmpdir(), "reallyme-release-runner-"));
@@ -32,8 +34,8 @@ const createConsumer = () => {
   return root;
 };
 
-const runConsumer = (root) =>
-  spawnSync(process.execPath, [runnerPath], {
+const runConsumer = (root, selectedRunnerPath = runnerPath) =>
+  spawnSync(process.execPath, [selectedRunnerPath], {
     cwd: root,
     encoding: "utf8",
   });
@@ -51,7 +53,7 @@ test("runner supplies its immutable package core to the consumer", () => {
     `const coreUrl = process.env.RELEASE_READINESS_CORE_URL;
 if (typeof coreUrl !== "string") process.exit(2);
 const { RELEASE_READINESS_VERSION } = await import(coreUrl);
-if (RELEASE_READINESS_VERSION !== "0.6.4") process.exit(3);
+if (RELEASE_READINESS_VERSION !== "0.6.5") process.exit(3);
 `,
   );
   const result = runConsumer(root);
@@ -105,5 +107,29 @@ context.assertRustSourcePolicy();
   assert.equal(gitAdd.status, 0, gitAdd.stderr);
 
   const result = runConsumer(root);
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("runner-bound core remains external inside the consumer checkout", () => {
+  const root = createConsumer();
+  const packageRoot = join(root, ".release-readiness");
+  const packageScripts = join(packageRoot, "scripts");
+  mkdirSync(packageScripts, { recursive: true });
+  copyFileSync(corePath, join(packageRoot, "core.mjs"));
+  const nestedRunnerPath = join(packageScripts, "run-consumer-check.mjs");
+  copyFileSync(runnerPath, nestedRunnerPath);
+  writeFileSync(
+    join(root, "scripts", "check_release_readiness.mjs"),
+    `const { createReleaseReadinessContext } = await import(
+  process.env.RELEASE_READINESS_CORE_URL,
+);
+createReleaseReadinessContext({
+  scriptUrl: import.meta.url,
+  requireTrackedFiles: true,
+});
+`,
+  );
+
+  const result = runConsumer(root, nestedRunnerPath);
   assert.equal(result.status, 0, result.stderr);
 });
