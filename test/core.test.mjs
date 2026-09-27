@@ -3569,12 +3569,10 @@ message ResolveResult { bytes document = 1; }
   );
 });
 
-test("ReallyMe protobuf release policy defaults to current pinned generator versions", () => {
+test("ReallyMe protobuf release policy defaults to the external runner", () => {
   const root = createFixture();
   const context = createContext(root);
   mkdirSync(join(root, "generated"), { recursive: true });
-  mkdirSync(join(root, "scripts", "release-readiness"), { recursive: true });
-  writeFileSync(join(root, "scripts", "release-readiness", "core.mjs"), "core\n");
   writeFileSync(join(root, "harden.mjs"), 'const option = "--check-idempotent";\nredact\n');
   writeFileSync(
     join(root, "schema.proto"),
@@ -3607,6 +3605,10 @@ struct Wire {
   writeFileSync(
     join(root, ".github", "workflows", "protobuf-ci.yml"),
     `name: Protobuf
+on:
+  pull_request:
+    paths:
+      - scripts/check_release_readiness.mjs
 env:
   BUF_VERSION: 1.72.0
   BUFFA_VERSION: 0.9.2
@@ -3622,13 +3624,11 @@ jobs:
       - name: Regenerate protobuf artifacts
         run: buf generate
       - name: Check release readiness generated freshness
-        run: node scripts/check_release_readiness.mjs --generated-freshness
-      - name: Mention vendored core
-        run: test -f scripts/release-readiness/core.mjs
+        run: node .release-readiness/scripts/run-consumer-check.mjs --generated-freshness
 `,
   );
 
-  context.assertReallyMeProtobufReleasePolicy({
+  const policy = {
     generatedFreshness: {
       generatedPaths: ["generated"],
       commands: [["node", ["--version"]]],
@@ -3651,7 +3651,164 @@ jobs:
       requireStrictJson: false,
       requireUnknownFieldZeroization: false,
     },
+  };
+  context.assertReallyMeProtobufReleasePolicy(policy);
+
+  const workflowPath = join(root, ".github", "workflows", "protobuf-ci.yml");
+  const workflow = readFileSync(workflowPath, "utf8");
+  writeFileSync(
+    workflowPath,
+    workflow.replace(
+      "      - scripts/check_release_readiness.mjs\n",
+      "      - scripts/check_release_readiness.mjs\n      - legacy/release-core.mjs\n",
+    ),
+  );
+  context.assertReallyMeProtobufReleasePolicy({
+    ...policy,
+    corePath: "legacy/release-core.mjs",
   });
+
+  writeFileSync(
+    workflowPath,
+    workflow
+      .replace(
+        "      - scripts/check_release_readiness.mjs\n",
+        "      - contracts/**/*.proto\n",
+      )
+      .replace(
+        "env:\n",
+        "env:\n  CHECKER_PATH: scripts/check_release_readiness.mjs\n",
+      ),
+  );
+  const unrelatedReference = runFixtureScript(
+    root,
+    `context.assertReallyMeProtobufReleasePolicy(${JSON.stringify(policy)});`,
+  );
+  assert.equal(unrelatedReference.status, 1);
+  assert.match(
+    unrelatedReference.stderr,
+    /does not cover changes to scripts\/check_release_readiness\.mjs/u,
+  );
+
+  writeFileSync(
+    workflowPath,
+    workflow.replace(
+      "    paths:\n      - scripts/check_release_readiness.mjs\n",
+      "",
+    ),
+  );
+  const unfilteredChangeTrigger = runFixtureScript(
+    root,
+    `context.assertReallyMeProtobufReleasePolicy(${JSON.stringify(policy)});`,
+  );
+  assert.equal(unfilteredChangeTrigger.status, 0, unfilteredChangeTrigger.stderr);
+
+  writeFileSync(
+    workflowPath,
+    workflow
+      .replace(
+        "    paths:\n      - scripts/check_release_readiness.mjs\n",
+        "    paths-ignore:\n      - scripts/**\n",
+      )
+      .replace(
+        "env:\n",
+        "env:\n  CHECKER_PATH: scripts/check_release_readiness.mjs\n",
+      ),
+  );
+  const ignoredChecker = runFixtureScript(
+    root,
+    `context.assertReallyMeProtobufReleasePolicy(${JSON.stringify(policy)});`,
+  );
+  assert.equal(ignoredChecker.status, 1);
+  assert.match(
+    ignoredChecker.stderr,
+    /does not cover changes to scripts\/check_release_readiness\.mjs/u,
+  );
+
+  writeFileSync(
+    workflowPath,
+    workflow.replace(
+      "      - scripts/check_release_readiness.mjs\n",
+      "      - scripts/check_release_readiness.mjs\n      - '!scripts/**'\n",
+    ),
+  );
+  const negatedChecker = runFixtureScript(
+    root,
+    `context.assertReallyMeProtobufReleasePolicy(${JSON.stringify(policy)});`,
+  );
+  assert.equal(negatedChecker.status, 1);
+  assert.match(
+    negatedChecker.stderr,
+    /does not cover changes to scripts\/check_release_readiness\.mjs/u,
+  );
+
+  writeFileSync(
+    workflowPath,
+    workflow.replace(
+      "      - scripts/check_release_readiness.mjs\n",
+      "      - scripts/check_release_readiness.mjs\n    paths-ignore:\n      - scripts/**\n",
+    ),
+  );
+  const conflictingFilters = runFixtureScript(
+    root,
+    `context.assertReallyMeProtobufReleasePolicy(${JSON.stringify(policy)});`,
+  );
+  assert.equal(conflictingFilters.status, 1);
+  assert.match(conflictingFilters.stderr, /cannot combine paths and paths-ignore/u);
+
+  writeFileSync(
+    workflowPath,
+    workflow.replace(
+      "env:\n",
+      "  pull_request:\n\nenv:\n",
+    ),
+  );
+  const duplicateEvent = runFixtureScript(
+    root,
+    `context.assertReallyMeProtobufReleasePolicy(${JSON.stringify(policy)});`,
+  );
+  assert.equal(duplicateEvent.status, 1);
+  assert.match(duplicateEvent.stderr, /on trigger defines pull_request more than once/u);
+});
+
+test("ReallyMe protobuf release policy rejects invalid checker paths", () => {
+  const root = createFixture();
+  const invalidChecker = runFixtureScript(
+    root,
+    'context.assertReallyMeProtobufReleasePolicy({ checkerPath: "" });',
+  );
+  assert.equal(invalidChecker.status, 1);
+  assert.match(
+    invalidChecker.stderr,
+    /protobuf release checker path must be a non-empty string/u,
+  );
+
+  const invalidLegacyCore = runFixtureScript(
+    root,
+    "context.assertReallyMeProtobufReleasePolicy({ corePath: 7 });",
+  );
+  assert.equal(invalidLegacyCore.status, 1);
+  assert.match(
+    invalidLegacyCore.stderr,
+    /legacy protobuf release core path must be null or a non-empty string/u,
+  );
+
+  const whitespaceChecker = runFixtureScript(
+    root,
+    'context.assertReallyMeProtobufReleasePolicy({ checkerPath: "   " });',
+  );
+  assert.equal(whitespaceChecker.status, 1);
+  assert.match(
+    whitespaceChecker.stderr,
+    /workflow coverage path must be a canonical repository-relative path/u,
+  );
+
+  const escapingChecker = runFixtureScript(
+    root,
+    'context.assertReallyMeProtobufReleasePolicy({ checkerPath: "../checker.mjs" });',
+  );
+  assert.equal(escapingChecker.status, 1);
+  assert.match(escapingChecker.stderr, /workflow coverage path escapes the repository root/u);
 });
 
 test("aggregate Rust protobuf policy rejects duplicate freshness configuration", () => {
@@ -3692,7 +3849,7 @@ test("local checker template is syntactically valid and fails closed by construc
   assert.match(template, /assertReallyMeRustProtoRepositoryPolicy/u);
   assert.match(template, /assertNoTemplateMarkers\(repositoryPolicy\)/u);
   assert.match(template, /validatePublishablePathDependencies: true/u);
-  assert.match(template, /version: "0\.6\.5"/u);
+  assert.match(template, /version: "0\.6\.6"/u);
   assert.match(template, /version: "0\.13\.2"/u);
   assert.match(template, /REPLACE_SECRET_BYTE_FIELD/u);
   assert.doesNotMatch(template, /requireTrackedFiles: false/u);
@@ -3974,7 +4131,7 @@ test("vendored core policy rejects assertions hidden in strings", () => {
   const root = createTrackedFixture();
   writeFileSync(
     join(root, "scripts", "release-readiness", "core.mjs"),
-    `export const RELEASE_READINESS_VERSION = "0.6.5";
+    `export const RELEASE_READINESS_VERSION = "0.6.6";
 const assertReallyMeVendoredCorePolicy = () => {
   "assertGeneratedArtifactsFresh";
   "assertGeneratedProtoHardeningPolicy";

@@ -11,7 +11,7 @@ import { spawnSync } from "node:child_process";
 // This module is the release package's shared policy core. The public runner
 // supplies this exact immutable module to consumers so release-critical checks
 // cannot drift independently from the pinned package revision.
-export const RELEASE_READINESS_VERSION = "0.6.5";
+export const RELEASE_READINESS_VERSION = "0.6.6";
 
 const DEFAULT_FAILURE_PREFIX = "release readiness check failed";
 const MAX_PRODUCTION_SOURCE_LINES = 500;
@@ -3597,7 +3597,11 @@ export function createReleaseReadinessContext(options) {
   const assertReallyMeProtobufReleasePolicy = (policy) => {
     const {
       workflow = ".github/workflows/protobuf-ci.yml",
-      corePath = "scripts/release-readiness/core.mjs",
+      checkerPath = "scripts/check_release_readiness.mjs",
+      // Retain an explicit legacy override while pinned consumers migrate from
+      // the former vendored-core model. New consumers reference their checker;
+      // the immutable core remains owned by the package runner.
+      corePath = null,
       bufVersion = "1.72.0",
       buffaVersion = "0.9.2",
       installBufStepName = "Install buf",
@@ -3610,13 +3614,25 @@ export function createReleaseReadinessContext(options) {
       generatedFreshnessMode = false,
       generatedFreshness,
       generatedFreshnessStepName = "Check release readiness generated freshness",
-      generatedFreshnessStepRun = "node scripts/check_release_readiness.mjs --generated-freshness",
+      generatedFreshnessStepRun =
+        "node .release-readiness/scripts/run-consumer-check.mjs --generated-freshness",
       workflowMode = "explicit",
     } = policy ?? {};
 
+    if (typeof checkerPath !== "string" || checkerPath.length === 0) {
+      fail("protobuf release checker path must be a non-empty string");
+    }
+    if (corePath !== null && (typeof corePath !== "string" || corePath.length === 0)) {
+      fail("legacy protobuf release core path must be null or a non-empty string");
+    }
+    const releaseReadinessPath = normalizeWorkflowCoveragePath(
+      workflow,
+      corePath ?? checkerPath,
+    );
+
     assertContains(workflow, `BUFFA_VERSION: ${buffaVersion}`);
     assertContains(workflow, `BUF_VERSION: ${bufVersion}`);
-    assertContains(workflow, corePath);
+    assertWorkflowChangePathCovered(workflow, releaseReadinessPath);
     validateGeneratedArtifactsPolicy(generatedFreshness);
 
     if (installBufUses !== null) {
@@ -3852,6 +3868,179 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
       return trimmed.slice(1, -1);
     }
     return trimmed;
+  };
+
+  const parseWorkflowInlineSequence = (path, label, value) => {
+    const trimmed = stripWorkflowInlineComment(value).trim();
+    if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) {
+      fail(`${path} ${label} must use a block sequence or a simple inline sequence`);
+    }
+    const contents = trimmed.slice(1, -1).trim();
+    if (contents.length === 0) {
+      fail(`${path} ${label} sequence must not be empty`);
+    }
+    const entries = contents.split(",").map((entry) => unquoteWorkflowScalar(entry));
+    if (entries.some((entry) => entry.length === 0 || entry.includes(","))) {
+      fail(`${path} ${label} contains an unsupported inline sequence entry`);
+    }
+    return entries;
+  };
+
+  const parseWorkflowBlockSequence = (path, lines, headerIndex, headerIndent, label) => {
+    const entries = [];
+    for (let index = headerIndex + 1; index < lines.length; index += 1) {
+      const line = lines[index];
+      const trimmed = line.trim();
+      if (trimmed.length === 0 || trimmed.startsWith("#")) {
+        continue;
+      }
+      const indent = countLeadingSpaces(line);
+      if (indent <= headerIndent) {
+        break;
+      }
+      const entryMatch = /^\s*-\s+(.+?)\s*$/u.exec(line);
+      if (indent !== headerIndent + 2 || entryMatch === null) {
+        fail(`${path} ${label} must be a flat sequence`);
+      }
+      const entry = unquoteWorkflowScalar(entryMatch[1]);
+      if (entry.length === 0) {
+        fail(`${path} ${label} contains an empty entry`);
+      }
+      entries.push(entry);
+    }
+    if (entries.length === 0) {
+      fail(`${path} ${label} sequence must not be empty`);
+    }
+    return entries;
+  };
+
+  const normalizeWorkflowCoveragePath = (path, value) => {
+    if (
+      typeof value !== "string" ||
+      value.length === 0 ||
+      value.trim() !== value ||
+      value.includes("\\")
+    ) {
+      fail(`${path} workflow coverage path must be a canonical repository-relative path`);
+    }
+    const absolute = resolveRepositoryPath(value, "workflow coverage path");
+    const normalized = relative(root, absolute).replaceAll("\\", "/");
+    if (normalized === "." || normalized !== value) {
+      fail(`${path} workflow coverage path must be a canonical repository-relative path`);
+    }
+    return normalized;
+  };
+
+  const assertWorkflowChangePathCovered = (path, requiredPath) => {
+    const normalizedPath = normalizeWorkflowCoveragePath(path, requiredPath);
+    const lines = readText(path).replace(/\r\n/gu, "\n").split("\n");
+    const onHeaders = lines
+      .map((line, index) => ({
+        index,
+        match: /^(?:on|"on"|'on'):\s*(.*?)\s*$/u.exec(line),
+      }))
+      .filter((entry) => entry.match !== null);
+    if (onHeaders.length !== 1) {
+      fail(`${path} must define exactly one top-level on trigger`);
+    }
+
+    const changeEvents = new Set(["pull_request", "pull_request_target", "push"]);
+    const onHeader = onHeaders[0];
+    const inlineTrigger = stripWorkflowInlineComment(onHeader.match[1]).trim();
+    if (inlineTrigger.length !== 0) {
+      const events = inlineTrigger.startsWith("[")
+        ? parseWorkflowInlineSequence(path, "on trigger", inlineTrigger)
+        : [unquoteWorkflowScalar(inlineTrigger)];
+      if (events.some((event) => changeEvents.has(event))) {
+        return;
+      }
+      fail(`${path} does not run for source changes`);
+    }
+
+    let onEnd = lines.length;
+    for (let index = onHeader.index + 1; index < lines.length; index += 1) {
+      const line = lines[index];
+      if (
+        line.trim().length !== 0 &&
+        !line.trimStart().startsWith("#") &&
+        countLeadingSpaces(line) === 0
+      ) {
+        onEnd = index;
+        break;
+      }
+    }
+
+    const eventHeaders = [];
+    for (let index = onHeader.index + 1; index < onEnd; index += 1) {
+      const match = /^ {2}([A-Za-z0-9_-]+):\s*(.*?)\s*$/u.exec(lines[index]);
+      if (match !== null) {
+        eventHeaders.push({ index, name: match[1], value: match[2] });
+      }
+    }
+    if (eventHeaders.length === 0) {
+      fail(`${path} on trigger mapping must not be empty`);
+    }
+    const eventNames = new Set();
+    for (const event of eventHeaders) {
+      if (eventNames.has(event.name)) {
+        fail(`${path} on trigger defines ${event.name} more than once`);
+      }
+      eventNames.add(event.name);
+    }
+
+    for (const [eventIndex, event] of eventHeaders.entries()) {
+      if (!changeEvents.has(event.name)) {
+        continue;
+      }
+      const eventValue = stripWorkflowInlineComment(event.value).trim();
+      if (eventValue === "{}") {
+        return;
+      }
+      if (eventValue.length !== 0) {
+        fail(`${path} ${event.name} trigger must be a mapping or an empty mapping`);
+      }
+
+      const eventEnd = eventHeaders[eventIndex + 1]?.index ?? onEnd;
+      const filterHeaders = [];
+      for (let index = event.index + 1; index < eventEnd; index += 1) {
+        const match = /^ {4}(paths|paths-ignore):\s*(.*?)\s*$/u.exec(lines[index]);
+        if (match !== null) {
+          filterHeaders.push({ index, name: match[1], value: match[2] });
+        }
+      }
+      const pathFilters = filterHeaders.filter((filter) => filter.name === "paths");
+      const ignoreFilters = filterHeaders.filter((filter) => filter.name === "paths-ignore");
+      if (pathFilters.length > 1 || ignoreFilters.length > 1) {
+        fail(`${path} ${event.name} trigger defines a path filter more than once`);
+      }
+      if (pathFilters.length !== 0 && ignoreFilters.length !== 0) {
+        fail(`${path} ${event.name} trigger cannot combine paths and paths-ignore`);
+      }
+      if (pathFilters.length === 0 && ignoreFilters.length === 0) {
+        return;
+      }
+      if (pathFilters.length === 0) {
+        // Proving that an ignore glob cannot suppress the checker requires the
+        // complete GitHub pattern grammar. Fail closed instead of approximating
+        // that security boundary with a subtly different matcher.
+        continue;
+      }
+
+      const filter = pathFilters[0];
+      const inlinePaths = stripWorkflowInlineComment(filter.value).trim();
+      const entries =
+        inlinePaths.length === 0
+          ? parseWorkflowBlockSequence(path, lines, filter.index, 4, `${event.name} paths`)
+          : parseWorkflowInlineSequence(path, `${event.name} paths`, inlinePaths);
+      if (
+        entries.every((entry) => !entry.startsWith("!")) &&
+        entries.includes(normalizedPath)
+      ) {
+        return;
+      }
+    }
+
+    fail(`${path} does not cover changes to ${normalizedPath}`);
   };
 
   const countLeadingSpaces = (line) => {

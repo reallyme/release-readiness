@@ -9,10 +9,10 @@
 
 </div>
 
-This package contains a dependency-free Node.js core used by ReallyMe
-release scripts. Sister repositories can vendor the core byte-for-byte for
-offline local use. Remote CI should execute the current shared repository
-runner so policy fixes do not remain trapped in stale local copies.
+This package contains a dependency-free Node.js core used by ReallyMe release
+scripts. Consumer repositories keep only their repository-specific checker and
+execute the immutable core supplied by a pinned package runner. This prevents
+policy fixes from remaining trapped in stale local copies.
 
 ## What It Checks
 
@@ -68,7 +68,7 @@ current marker is:
 ```js
 assertContains(
   "core.mjs",
-  'RELEASE_READINESS_VERSION = "0.6.5"',
+  'RELEASE_READINESS_VERSION = "0.6.6"',
 );
 ```
 
@@ -134,6 +134,17 @@ For a new Rust/protobuf repository, start from
 [`templates/check_release_readiness.mjs`](templates/check_release_readiness.mjs)
 and the companion [`templates/README.md`](templates/README.md). The template
 fails closed until every `REPLACE_*` marker has been replaced.
+
+The protobuf release policy defaults to the explicit-checkout invocation at
+`.release-readiness/scripts/run-consumer-check.mjs`. Consumers using the npm
+invocation must configure `generatedFreshnessStepRun` with their complete,
+commit-pinned npm command. The policy references the consumer checker path for
+workflow-change coverage; it never expects a vendored core in new consumers.
+An unfiltered `push`, `pull_request`, or `pull_request_target` trigger covers
+every repository path. When a change trigger uses `paths`, its flat sequence
+must include the exact checker path and must not contain negated patterns.
+`paths-ignore` cannot prove coverage because its full glob semantics belong to
+GitHub, so configure an explicit `paths` entry for this policy instead.
 
 Use the public [archetype matrix](docs/archetype-matrix.md) to select a
 repository responsibility, then apply the exact lane and ownership rules in
@@ -221,10 +232,9 @@ header-governed by default. This policy does not choose or change a consumer
 repository's license. Repositories belonging to another organization, or
 ReallyMe repositories using different terms, must pass their own exact
 `copyright` and `license` values to `assertSpdxHeaders` and maintain the
-corresponding license files. The vendored `core.mjs` remains ReallyMe-authored,
-dual-licensed code: preserve its header and third-party notice, and exclude
-that exact vendored path with reason `"vendored"` instead of restamping it with
-the consumer's attribution.
+corresponding license files. Legacy consumers pinned to an earlier vendored-core
+release must preserve that core's original header and third-party notice while
+they migrate; new consumers must use the centrally versioned runner.
 
 ## Protobuf Notes
 

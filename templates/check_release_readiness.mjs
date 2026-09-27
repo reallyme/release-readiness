@@ -30,7 +30,7 @@ const repositoryPolicy = {
   generatedFreshnessMode,
   releasePackage: {
     scriptPath: "scripts/check_release_readiness.mjs",
-    version: "0.6.5",
+    version: "0.6.6",
   },
   workflowActions: {},
   nodeWorkflows: {
@@ -231,6 +231,9 @@ const repositoryPolicy = {
   protobufRelease: {
     workflow: ".github/workflows/protobuf-ci.yml",
     workflowMode: "delegated",
+    checkerPath: "scripts/check_release_readiness.mjs",
+    generatedFreshnessStepRun:
+      "node .release-readiness/scripts/run-consumer-check.mjs --generated-freshness",
     installBufUses:
       "bufbuild/buf-setup-action@REPLACE_BUF_SETUP_ACTION_FULL_COMMIT_SHA",
     hardeningPolicy: {
@@ -294,7 +297,9 @@ const repositoryPolicy = {
   workflows: [
     {
       path: ".github/workflows/protobuf-ci.yml",
-      required: ["node scripts/check_release_readiness.mjs --generated-freshness"],
+      required: [
+        "node .release-readiness/scripts/run-consumer-check.mjs --generated-freshness",
+      ],
       forbidden: [],
       runSteps: [],
       usesSteps: [],
