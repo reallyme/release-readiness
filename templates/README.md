@@ -19,9 +19,13 @@ The template enables the following mandatory baseline through
 
 - the checker is Git-tracked and imports the immutable core supplied by the
   package runner at its exact semantic release version;
-- GitHub Actions are pinned to immutable commits and Node jobs use Node 24;
-- cargo-fuzz installs are exact-version pinned, locked, and present in both
-  pull-request and scheduled fuzz lanes through named workflow steps;
+- GitHub Actions are pinned to immutable commits and Node jobs declare numeric
+  runtime versions of at least 24;
+- action-specific checks match the action repository and require a full commit
+  SHA, so reviewed workflow updates do not require changing the checker;
+- cargo-fuzz installs use the exact workflow `CARGO_FUZZ_VERSION`, are locked,
+  and are present in both pull-request and scheduled fuzz lanes through named
+  workflow steps;
 - Cargo workspace lints, publish include allowlists, and publishable path
   dependency versions are validated;
 - production Rust and examples stay within the 500-line hard ceiling, separate
@@ -51,10 +55,22 @@ The template enables the following mandatory baseline through
 - protobuf CI owns the pinned `buf`/Buffa toolchain and invokes generated
   freshness exactly once.
 
+The shared core validates exact `BUF_VERSION` and `BUFFA_VERSION` values in
+the protobuf workflow's top-level `env`. Updating either tool only requires a
+reviewed workflow change unless a consumer explicitly configures a matching
+`bufVersion` or `buffaVersion` policy override.
+
 Keep component-specific algorithm, vector, provider, package, and documentation
 invariants below the marked boundary at the end of the local script. When a
 local assertion is useful to more than one repository, promote it into the
 central core or its declarative policy rather than duplicating it.
+
+The template expects `bufbuild/buf-action` for the protobuf workflow. Change
+`installBufAction` if the workflow uses another Buf action. The workflow must
+still pin the action to a full commit SHA. Configure the consumer repository's
+`.github/dependabot.yml` with the `github-actions` ecosystem if automated
+update pull requests are wanted. Dependabot updates workflow references, not
+SHA literals copied into checker source.
 
 Prefer action-named implementation files such as `create.rs`, `evaluate.ts`,
 `sign.swift`, and `verify.kt`. Treat this as a human-review convention rather

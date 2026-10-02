@@ -30,15 +30,13 @@ const repositoryPolicy = {
   generatedFreshnessMode,
   releasePackage: {
     scriptPath: "scripts/check_release_readiness.mjs",
-    version: "0.6.6",
+    version: "0.6.7",
   },
   workflowActions: {},
-  nodeWorkflows: {
-    nodeVersion: "24",
-  },
+  nodeWorkflows: {},
   cargoFuzz: {
     workflow: ".github/workflows/fuzz.yml",
-    version: "0.13.2",
+    versionFromWorkflowEnv: true,
     minimumInstallations: 2,
     requiredInstallSteps: [
       { job: "immediate", name: "Install cargo-fuzz" },
@@ -234,8 +232,7 @@ const repositoryPolicy = {
     checkerPath: "scripts/check_release_readiness.mjs",
     generatedFreshnessStepRun:
       "node .release-readiness/scripts/run-consumer-check.mjs --generated-freshness",
-    installBufUses:
-      "bufbuild/buf-setup-action@REPLACE_BUF_SETUP_ACTION_FULL_COMMIT_SHA",
+    installBufAction: "bufbuild/buf-action",
     hardeningPolicy: {
       hardeningScript: "REPLACE_HARDENING_SCRIPT",
       protoSchema: "REPLACE_PROTO_SCHEMA",

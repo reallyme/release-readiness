@@ -17,7 +17,8 @@ policy fixes from remaining trapped in stale local copies.
 ## What It Checks
 
 - Git-tracked release inputs and repository-contained paths.
-- GitHub Actions pinned to full commit SHAs, with Node jobs pinned to Node 24.
+- GitHub Actions pinned to full commit SHAs, with Node jobs using explicit
+  numeric versions of at least 24. This repository uses Node 24.
 - Workflow permissions matched structurally at the workflow and job scopes, and
   release-critical named steps matched as complete commands rather than loose
   substrings. Repeated step names can be scoped by job.
@@ -68,7 +69,7 @@ current marker is:
 ```js
 assertContains(
   "core.mjs",
-  'RELEASE_READINESS_VERSION = "0.6.6"',
+  'RELEASE_READINESS_VERSION = "0.6.7"',
 );
 ```
 
@@ -85,6 +86,34 @@ npm run check
 ```
 
 The GitHub Actions workflow runs the same command on Node 24.
+
+## Keeping Pins Current
+
+This repository has no npm runtime dependencies. Its own workflow has two
+immutable action references (`actions/checkout` and `actions/setup-node`).
+The release checker verifies each named action's repository and its full
+commit SHA; a reviewed update to that SHA only changes the workflow. A
+repository may configure the `github-actions` Dependabot ecosystem to propose
+those workflow updates.
+
+Other exact requirements are intentional toolchain and release contracts:
+
+| Requirement | Declaration | Update path |
+| --- | --- | --- |
+| Buf CLI | Exact workflow `BUF_VERSION` | Update the workflow value; a consumer may separately opt into an exact policy override |
+| Buffa generators | Exact workflow `BUFFA_VERSION` | Update the workflow value; a consumer may separately opt into an exact policy override |
+| cargo-fuzz template | Exact workflow `CARGO_FUZZ_VERSION` | Update the workflow value; both install lanes use that variable |
+| Node runtime | 24 in this repository | Review a runtime-major migration in this repository's workflow and checker |
+| Release-readiness package | 0.6.7 | Publish a new package revision and update consumer pins |
+
+Dependabot does not update version literals embedded in checker source. The
+shared core therefore validates Buf, Buffa, and template cargo-fuzz versions
+declared in workflow environment values without duplicating their numbers.
+Keep action SHAs in workflow files and match action repositories in checker
+policy with `assertWorkflowUsesStepPinnedTo` or `installBufAction`.
+Declarative `usesSteps` policies can use `{ name, action: "owner/repository" }`
+for the same rule; use `{ name, uses: "owner/repository@sha" }` only when a
+specific reviewed revision is itself the contract.
 
 Consumer repositories keep only their repository-specific checker. It loads
 the immutable core path supplied by the runner:

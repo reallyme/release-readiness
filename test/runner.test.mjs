@@ -53,7 +53,7 @@ test("runner supplies its immutable package core to the consumer", () => {
     `const coreUrl = process.env.RELEASE_READINESS_CORE_URL;
 if (typeof coreUrl !== "string") process.exit(2);
 const { RELEASE_READINESS_VERSION } = await import(coreUrl);
-if (RELEASE_READINESS_VERSION !== "0.6.6") process.exit(3);
+if (RELEASE_READINESS_VERSION !== "0.6.7") process.exit(3);
 `,
   );
   const result = runConsumer(root);

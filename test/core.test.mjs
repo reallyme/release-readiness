@@ -839,6 +839,48 @@ jobs:
   assert.match(result.stderr, /not pinned to a full commit SHA/u);
 });
 
+test("action repository checks accept updated commit pins and reject substitutions", () => {
+  const root = createFixture();
+  const workflow = ".github/workflows/checks.yaml";
+  const context = createContext(root);
+  const secondSha = "abcdef0123456789abcdef0123456789abcdef01";
+
+  context.assertWorkflowUsesStepPinnedTo(workflow, "Install Node", "actions/setup-node");
+  writeFileSync(
+    join(root, workflow),
+    `name: Checks\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - name: Install Node\n        uses: actions/setup-node@${secondSha} # v9.0.0\n`,
+  );
+  context.assertWorkflowUsesStepPinnedTo(workflow, "Install Node", "actions/setup-node");
+
+  for (const [uses, expected] of [
+    [`actions/checkout@${fullSha}`, /must use actions\/setup-node pinned to a full commit SHA/u],
+    ["actions/setup-node@v9", /must use actions\/setup-node pinned to a full commit SHA/u],
+    ["actions/setup-node@abc", /must use actions\/setup-node pinned to a full commit SHA/u],
+  ]) {
+    writeFileSync(
+      join(root, workflow),
+      `name: Checks\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - name: Install Node\n        uses: ${uses}\n`,
+    );
+    const result = runFixtureScript(
+      root,
+      `context.assertWorkflowUsesStepPinnedTo(${JSON.stringify(workflow)}, "Install Node", "actions/setup-node");`,
+    );
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, expected);
+  }
+
+  writeFileSync(
+    join(root, workflow),
+    `name: Checks\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - name: Install Node\n        if: false\n        uses: actions/setup-node@${secondSha}\n`,
+  );
+  const disabled = runFixtureScript(
+    root,
+    `context.assertWorkflowUsesStepPinnedTo(${JSON.stringify(workflow)}, "Install Node", "actions/setup-node");`,
+  );
+  assert.equal(disabled.status, 1);
+  assert.match(disabled.stderr, /statically disabled/u);
+});
+
 test("cargo-fuzz workflow policy requires locked exact-version installs", () => {
   const root = createFixture();
   const context = createContext(root);
@@ -884,6 +926,49 @@ jobs:
   );
   assert.equal(result.status, 1);
   assert.match(result.stderr, /must use --locked/u);
+});
+
+test("cargo-fuzz policy reads one exact workflow version without a checker literal", () => {
+  const root = createFixture();
+  const path = join(root, ".github", "workflows", "fuzz.yml");
+  const workflow = (version, commandVersion = '"$CARGO_FUZZ_VERSION"') =>
+    `name: Fuzz\nenv:\n  CARGO_FUZZ_VERSION: "${version}"\njobs:\n  immediate:\n    steps:\n      - name: Install cargo-fuzz\n        run: cargo install cargo-fuzz --version ${commandVersion} --locked\n  scheduled:\n    steps:\n      - name: Install cargo-fuzz\n        run: cargo install cargo-fuzz --version "$CARGO_FUZZ_VERSION" --locked\n`;
+  const policy = { versionFromWorkflowEnv: true };
+  const context = createContext(root);
+
+  writeFileSync(path, workflow("0.13.2"));
+  context.assertCargoFuzzWorkflowPolicy(policy);
+  writeFileSync(path, workflow("0.14.0"));
+  context.assertCargoFuzzWorkflowPolicy(policy);
+
+  for (const [source, failure] of [
+    [workflow("latest"), /CARGO_FUZZ_VERSION must be an exact semantic version/u],
+    [
+      workflow("0.14.0").replace("jobs:\n", "  CARGO_FUZZ_VERSION: 0.15.0\njobs:\n"),
+      /declare CARGO_FUZZ_VERSION exactly once/u,
+    ],
+    [workflow("0.14.0", "0.14.0"), /must use CARGO_FUZZ_VERSION/u],
+    [
+      workflow("0.14.0", '0.14.0 --locked # --version "$CARGO_FUZZ_VERSION"'),
+      /must use CARGO_FUZZ_VERSION/u,
+    ],
+  ]) {
+    writeFileSync(path, source);
+    const result = runFixtureScript(
+      root,
+      `context.assertCargoFuzzWorkflowPolicy(${JSON.stringify(policy)});`,
+    );
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, failure);
+  }
+
+  writeFileSync(path, workflow("0.14.0"));
+  const ambiguous = runFixtureScript(
+    root,
+    'context.assertCargoFuzzWorkflowPolicy({ versionFromWorkflowEnv: true, version: "0.14.0" });',
+  );
+  assert.equal(ambiguous.status, 1);
+  assert.match(ambiguous.stderr, /exactly one exact version or Git revision/u);
 });
 
 test("cargo-fuzz workflow policy ignores comments and requires configured lanes", () => {
@@ -1140,6 +1225,32 @@ jobs:
   assert.match(result.stderr, /uses Node tooling without actions\/setup-node/u);
 });
 
+test("Node workflow policy accepts explicit numeric pins without a shared version", () => {
+  const root = createFixture();
+  const workflow = join(root, ".github", "workflows", "checks.yaml");
+  const original = readFileSync(workflow, "utf8");
+  writeFileSync(workflow, original.replace('node-version: "24"', 'node-version: "26"'));
+  const context = createContext(root);
+  context.assertNodeWorkflowJobsPinNode();
+
+  const exactVersion = runFixtureScript(
+    root,
+    'context.assertNodeWorkflowJobsPinNode({ nodeVersion: "24" });',
+  );
+  assert.equal(exactVersion.status, 1);
+  assert.match(exactVersion.stderr, /must pin Node 24/u);
+
+  writeFileSync(workflow, original.replace('node-version: "24"', 'node-version: "lts/*"'));
+  const floatingVersion = runFixtureScript(root, "context.assertNodeWorkflowJobsPinNode();");
+  assert.equal(floatingVersion.status, 1);
+  assert.match(floatingVersion.stderr, /must pin a numeric Node version of at least 24/u);
+
+  writeFileSync(workflow, original.replace('node-version: "24"', 'node-version: "20"'));
+  const oldVersion = runFixtureScript(root, "context.assertNodeWorkflowJobsPinNode();");
+  assert.equal(oldVersion.status, 1);
+  assert.match(oldVersion.stderr, /must pin a numeric Node version of at least 24/u);
+});
+
 test("workflow action policy requires Docker digests and contained local paths", () => {
   const root = createFixture();
   writeFileSync(
@@ -1250,10 +1361,41 @@ jobs:
   context.assertWorkflowPolicy({
     path: ".github/workflows/repeated.yml",
     usesSteps: [
-      { job: "build", name: "Checkout", uses: `actions/checkout@${fullSha}` },
+      { job: "build", name: "Checkout", action: "actions/checkout" },
       { job: "release", name: "Checkout", uses: `actions/checkout@${fullSha}` },
     ],
   });
+
+  const workflowPath = join(root, ".github", "workflows", "repeated.yml");
+  const updated = readFileSync(workflowPath, "utf8").replace(
+    `actions/checkout@${fullSha}`,
+    "actions/checkout@abcdef0123456789abcdef0123456789abcdef01",
+  );
+  writeFileSync(workflowPath, updated);
+  context.assertWorkflowPolicy({
+    path: ".github/workflows/repeated.yml",
+    usesSteps: [
+      { job: "build", name: "Checkout", action: "actions/checkout" },
+      { job: "release", name: "Checkout", uses: `actions/checkout@${fullSha}` },
+    ],
+  });
+
+  const conflicting = runFixtureScript(
+    root,
+    `context.assertWorkflowPolicy(${JSON.stringify({
+      path: ".github/workflows/repeated.yml",
+      usesSteps: [
+        {
+          job: "build",
+          name: "Checkout",
+          action: "actions/checkout",
+          uses: `actions/checkout@${fullSha}`,
+        },
+      ],
+    })});`,
+  );
+  assert.equal(conflicting.status, 1);
+  assert.match(conflicting.stderr, /must select one action constraint/u);
 });
 
 test("generated freshness rejects mutations outside declared generated paths", () => {
@@ -3615,6 +3757,8 @@ env:
 jobs:
   check:
     steps:
+      - name: Install buf
+        uses: bufbuild/buf-action@${fullSha}
       - name: Install pinned Buffa generators
         run: |
           cargo install protoc-gen-buffa --version "$BUFFA_VERSION" --locked
@@ -3629,6 +3773,7 @@ jobs:
   );
 
   const policy = {
+    installBufAction: "bufbuild/buf-action",
     generatedFreshness: {
       generatedPaths: ["generated"],
       commands: [["node", ["--version"]]],
@@ -3654,8 +3799,77 @@ jobs:
   };
   context.assertReallyMeProtobufReleasePolicy(policy);
 
+  const alternatePin = "abcdef0123456789abcdef0123456789abcdef01";
   const workflowPath = join(root, ".github", "workflows", "protobuf-ci.yml");
   const workflow = readFileSync(workflowPath, "utf8");
+  writeFileSync(workflowPath, workflow.replace(fullSha, alternatePin));
+  context.assertReallyMeProtobufReleasePolicy(policy);
+  writeFileSync(workflowPath, workflow);
+
+  const conflictingActionConstraint = runFixtureScript(
+    root,
+    `context.assertReallyMeProtobufReleasePolicy(${JSON.stringify({
+      ...policy,
+      installBufUses: `bufbuild/buf-action@${fullSha}`,
+    })});`,
+  );
+  assert.equal(conflictingActionConstraint.status, 1);
+  assert.match(conflictingActionConstraint.stderr, /select one install-buf action constraint/u);
+
+  const newerToolchain = workflow
+    .replace("BUF_VERSION: 1.72.0", 'BUF_VERSION: "1.73.0"')
+    .replace("BUFFA_VERSION: 0.9.2", "BUFFA_VERSION: 0.10.0");
+  writeFileSync(workflowPath, newerToolchain);
+  context.assertReallyMeProtobufReleasePolicy(policy);
+  const explicitVersion = runFixtureScript(
+    root,
+    `context.assertReallyMeProtobufReleasePolicy(${JSON.stringify({
+      ...policy,
+      bufVersion: "1.72.0",
+    })});`,
+  );
+  assert.equal(explicitVersion.status, 1);
+  assert.match(explicitVersion.stderr, /BUF_VERSION does not match the configured version/u);
+
+  for (const invalidWorkflow of [
+    workflow.replace("BUF_VERSION: 1.72.0", "BUF_VERSION: latest"),
+    workflow.replace("BUF_VERSION: 1.72.0", "BUF_VERSION: 1.72.0\n  BUF_VERSION: 1.73.0"),
+    workflow.replace("BUF_VERSION: 1.72.0", "# BUF_VERSION: 1.72.0"),
+    workflow.replace("    steps:\n", '    env:\n      "BUF_VERSION": "9.9.9"\n    steps:\n'),
+  ]) {
+    writeFileSync(workflowPath, invalidWorkflow);
+    const invalidVersion = runFixtureScript(
+      root,
+      `context.assertReallyMeProtobufReleasePolicy(${JSON.stringify(policy)});`,
+    );
+    assert.equal(invalidVersion.status, 1);
+    assert.match(invalidVersion.stderr, /BUF_VERSION/u);
+  }
+  writeFileSync(
+    workflowPath,
+    workflow.replace("  BUF_VERSION: 1.72.0", "  <<: *tool_versions\n  BUF_VERSION: 1.72.0"),
+  );
+  const mergedVersion = runFixtureScript(
+    root,
+    `context.assertReallyMeProtobufReleasePolicy(${JSON.stringify(policy)});`,
+  );
+  assert.equal(mergedVersion.status, 1);
+  assert.match(mergedVersion.stderr, /unsupported inline environment or merge/u);
+  writeFileSync(
+    workflowPath,
+    workflow.replace(
+      "    steps:\n",
+      '    env: {BUF_VERSION: "9.9.9"}\n    steps:\n',
+    ),
+  );
+  const inlineOverride = runFixtureScript(
+    root,
+    `context.assertReallyMeProtobufReleasePolicy(${JSON.stringify(policy)});`,
+  );
+  assert.equal(inlineOverride.status, 1);
+  assert.match(inlineOverride.stderr, /unsupported inline environment or merge/u);
+  writeFileSync(workflowPath, workflow);
+
   writeFileSync(
     workflowPath,
     workflow.replace(
@@ -3849,8 +4063,9 @@ test("local checker template is syntactically valid and fails closed by construc
   assert.match(template, /assertReallyMeRustProtoRepositoryPolicy/u);
   assert.match(template, /assertNoTemplateMarkers\(repositoryPolicy\)/u);
   assert.match(template, /validatePublishablePathDependencies: true/u);
-  assert.match(template, /version: "0\.6\.6"/u);
-  assert.match(template, /version: "0\.13\.2"/u);
+  assert.match(template, /version: "0\.6\.7"/u);
+  assert.match(template, /versionFromWorkflowEnv: true/u);
+  assert.match(template, /installBufAction: "bufbuild\/buf-action"/u);
   assert.match(template, /REPLACE_SECRET_BYTE_FIELD/u);
   assert.doesNotMatch(template, /requireTrackedFiles: false/u);
 });
@@ -4131,7 +4346,7 @@ test("vendored core policy rejects assertions hidden in strings", () => {
   const root = createTrackedFixture();
   writeFileSync(
     join(root, "scripts", "release-readiness", "core.mjs"),
-    `export const RELEASE_READINESS_VERSION = "0.6.6";
+    `export const RELEASE_READINESS_VERSION = "0.6.7";
 const assertReallyMeVendoredCorePolicy = () => {
   "assertGeneratedArtifactsFresh";
   "assertGeneratedProtoHardeningPolicy";

@@ -16,7 +16,7 @@ const {
   assertSpdxHeaders,
   assertWorkflowActionsPinned,
   assertWorkflowRunStep,
-  assertWorkflowUsesStep,
+  assertWorkflowUsesStepPinnedTo,
   fail,
   readJson,
   readText,
@@ -35,8 +35,8 @@ if (packageJson.license !== "MIT OR Apache-2.0") {
 if (packageJson.version !== RELEASE_READINESS_VERSION) {
   fail("package version must match the shared core release version");
 }
-if (RELEASE_READINESS_VERSION !== "0.6.6") {
-  fail("package version must remain 0.6.6 for this release");
+if (RELEASE_READINESS_VERSION !== "0.6.7") {
+  fail("package version must remain 0.6.7 for this release");
 }
 if (
   JSON.stringify(packageJson.files) !==
@@ -57,7 +57,7 @@ for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]
   }
 }
 
-assertContains("core.mjs", 'RELEASE_READINESS_VERSION = "0.6.6"');
+assertContains("core.mjs", 'RELEASE_READINESS_VERSION = "0.6.7"');
 assertNotContains("core.mjs", "RELEASE_READINESS_CORE_CONTRACT_VERSION");
 assertContains("package.json", '"reallyme-release-readiness": "scripts/run-consumer-check.mjs"');
 assertContains("scripts/run-consumer-check.mjs", "RELEASE_READINESS_CORE_URL");
@@ -141,8 +141,7 @@ assertContains(
   "core.mjs",
   '"node .release-readiness/scripts/run-consumer-check.mjs --generated-freshness"',
 );
-assertContains("core.mjs", 'bufVersion = "1.72.0"');
-assertContains("core.mjs", 'buffaVersion = "0.9.2"');
+assertContains("core.mjs", "assertWorkflowToolVersion");
 assertContains("core.mjs", "DEFAULT_REALLYME_LATEST_STABLE_DEPENDENCIES");
 assertContains("core.mjs", "reallyMeLatestStableDependencies");
 assertContains("core.mjs", "loadLatestCargoRegistryVersion");
@@ -198,7 +197,7 @@ assertContains("README.md", "retired-path enforcement");
 assertContains("README.md", "buf generate");
 assertContains("README.md", "harden-generated-example-proto.mjs");
 assertContains("README.md", "actions/workflows/checks.yml/badge.svg");
-assertContains("README.md", 'RELEASE_READINESS_VERSION = "0.6.6"');
+assertContains("README.md", 'RELEASE_READINESS_VERSION = "0.6.7"');
 assertContains("README.md", "repository: reallyme/release-readiness");
 assertContains("README.md", "ref: FULL_RELEASE_READINESS_COMMIT_SHA");
 assertContains("README.md", "persist-credentials: false");
@@ -226,7 +225,7 @@ for (const needle of [
   "validatePublishablePathDependencies: true",
   "reallyMeLatestStableDependencies: true",
   "rustSource: {",
-  'version: "0.6.6"',
+  'version: "0.6.7"',
   "repositoryShape: {",
   'archetype: "protocol-engine"',
   "typescriptSource: {",
@@ -251,6 +250,8 @@ for (const needle of [
   "operations: [",
   "retiredPaths: []",
   "requiredInstallSteps: [",
+  "versionFromWorkflowEnv: true",
+  'installBufAction: "bufbuild/buf-action"',
   'checkerPath: "scripts/check_release_readiness.mjs"',
   "node .release-readiness/scripts/run-consumer-check.mjs --generated-freshness",
 ]) {
@@ -264,15 +265,15 @@ assertNotContains("core.mjs", 'from "yaml"');
 
 assertWorkflowActionsPinned();
 assertNodeWorkflowJobsPinNode({ nodeVersion: "24" });
-assertWorkflowUsesStep(
+assertWorkflowUsesStepPinnedTo(
   ".github/workflows/checks.yml",
   "Checkout",
-  "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+  "actions/checkout",
 );
-assertWorkflowUsesStep(
+assertWorkflowUsesStepPinnedTo(
   ".github/workflows/checks.yml",
   "Setup Node",
-  "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+  "actions/setup-node",
 );
 assertWorkflowRunStep(
   ".github/workflows/checks.yml",

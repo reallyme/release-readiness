@@ -31,6 +31,8 @@ target/
 # Local developer state
 /AGENTS.md
 /matrix.md
+/.claude/
+/.codex/
 
 # Generated artifacts
 /coverage/
