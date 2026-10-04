@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   copyFileSync,
   mkdtempSync,
@@ -2940,6 +2941,7 @@ func create() throws(CreateError) {}
 test("Swift source policy rejects unsafe operations, untyped errors, and escape hatches", () => {
   const cases = [
     ["func create() { _ = try! operation() }\n", /unsafe or terminating Swift operation/u],
+    ["func create(value: String?) { _ = value! }\n", /unsafe or terminating Swift operation/u],
     ["func create() throws {}\n", /typed throws or a typed Result/u],
     ["func create() { fatalError() }\n", /unsafe or terminating Swift operation/u],
     ["final class EmbeddedTests: XCTestCase {}\n", /separate test file/u],
@@ -2970,6 +2972,69 @@ test("Swift source policy rejects unsafe operations, untyped errors, and escape 
     assert.equal(result.status, 1);
     assert.match(result.stderr, expected);
   }
+});
+
+test("Swift source policy accepts Boolean negation without weakening force unwrap checks", () => {
+  const root = createTrackedFixture();
+  mkdirSync(join(root, "Sources", "Identity"), { recursive: true });
+  writeFileSync(join(root, "Package.swift"), 'let strictConcurrency = "StrictConcurrency"\n');
+  writeFileSync(
+    join(root, "Sources", "Identity", "create.swift"),
+    "func create(_ ready: Bool) -> Bool { if !ready { return false }; return true }\n",
+  );
+  const gitAdd = spawnSync("git", ["add", "Package.swift", "Sources"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const context = createContext(root);
+  context.assertSwiftSourcePolicy({
+    roots: ["Sources"],
+    configuration: { files: [{ path: "Package.swift", required: ["StrictConcurrency"] }] },
+    verification: verificationPolicy(["format", "lint", "build", "test"]),
+  });
+});
+
+test("Swift source policy binds vendor and audited concurrency bridges to reviewed hashes", () => {
+  const root = createTrackedFixture();
+  const vendor = "apple/Vendor/WireGuardKit";
+  const bridge = "apple/Sources/Tunnel/OwnCompletion.swift";
+  mkdirSync(join(root, vendor), { recursive: true });
+  mkdirSync(join(root, "apple", "Sources", "Tunnel"), { recursive: true });
+  writeFileSync(join(root, "apple", "Package.swift"), "import PackageDescription\n");
+  writeFileSync(join(root, "THIRD_PARTY_NOTICES.md"), "WireGuardKit is vendored.\n");
+  writeFileSync(join(root, vendor, "Adapter.swift"), "func vendor() { fatalError() }\n");
+  writeFileSync(join(root, bridge), "final class OwnCompletion: @unchecked Sendable {}\n");
+  const gitAdd = spawnSync("git", ["add", "."], { cwd: root, encoding: "utf8" });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const context = createContext(root);
+  const snapshot = [...context.snapshotDirectory(vendor)].sort(([left], [right]) => left.localeCompare(right));
+  const policy = {
+    roots: ["apple"],
+    configuration: { files: [{ path: "apple/Package.swift", required: ["import PackageDescription"] }] },
+    vendoredSources: [{
+      path: vendor,
+      digest: createHash("sha256").update(JSON.stringify(snapshot)).digest("hex"),
+      noticePath: "THIRD_PARTY_NOTICES.md",
+    }],
+    auditedConcurrencyBridges: [{
+      path: bridge,
+      digest: createHash("sha256").update(readFileSync(join(root, bridge))).digest("hex"),
+      tokens: ["@unchecked Sendable"],
+      reason: "The completion owner serializes every access to its state under a lock.",
+    }],
+    verification: verificationPolicy(["format", "lint", "build", "test"]),
+  };
+  assert.equal(runTrackedFixtureScript(root, `context.assertSwiftSourcePolicy(${JSON.stringify(policy)});`).status, 0);
+  writeFileSync(join(root, vendor, "Adapter.swift"), "func vendor() { fatalError(); print(1) }\n");
+  const vendorFailure = runTrackedFixtureScript(root, `context.assertSwiftSourcePolicy(${JSON.stringify(policy)});`);
+  assert.equal(vendorFailure.status, 1);
+  assert.match(vendorFailure.stderr, /differs from its reviewed tree digest/u);
+  writeFileSync(join(root, vendor, "Adapter.swift"), "func vendor() { fatalError() }\n");
+  writeFileSync(join(root, bridge), "final class OwnCompletion: @unchecked Sendable { let value = 1 }\n");
+  const bridgeFailure = runTrackedFixtureScript(root, `context.assertSwiftSourcePolicy(${JSON.stringify(policy)});`);
+  assert.equal(bridgeFailure.status, 1);
+  assert.match(bridgeFailure.stderr, /differs from its reviewed file digest/u);
 });
 
 test("Kotlin source policy accepts explicit API configuration and separate tests", () => {
@@ -3010,6 +3075,26 @@ fun create(): CreateOutcome = Created
     },
     verification: verificationPolicy(["format", "static-analysis", "compile", "test"]),
   });
+});
+
+test("Kotlin source policy permits a typed exception subclass but rejects direct generic construction", () => {
+  const root = createTrackedFixture();
+  mkdirSync(join(root, "src", "main", "kotlin"), { recursive: true });
+  writeFileSync(join(root, "build.gradle.kts"), "explicitApi()\n");
+  const sourcePath = join(root, "src", "main", "kotlin", "DomainError.kt");
+  writeFileSync(sourcePath, "enum class Reason { INVALID }\nclass DomainError(val reason: Reason) : RuntimeException()\n");
+  const gitAdd = spawnSync("git", ["add", "build.gradle.kts", "src"], { cwd: root, encoding: "utf8" });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+  const policy = {
+    roots: ["src"],
+    configuration: { files: [{ path: "build.gradle.kts", required: ["explicitApi()"] }] },
+    verification: verificationPolicy(["format", "static-analysis", "compile", "test"]),
+  };
+  assert.equal(runTrackedFixtureScript(root, `context.assertKotlinSourcePolicy(${JSON.stringify(policy)});`).status, 0);
+  writeFileSync(sourcePath, "fun fail(): Nothing = throw RuntimeException()\n");
+  const rejected = runTrackedFixtureScript(root, `context.assertKotlinSourcePolicy(${JSON.stringify(policy)});`);
+  assert.equal(rejected.status, 1);
+  assert.match(rejected.stderr, /forbidden generic Kotlin error/u);
 });
 
 test("Kotlin source policy rejects unsafe operations and weak boundaries", () => {
@@ -4063,7 +4148,7 @@ test("local checker template is syntactically valid and fails closed by construc
   assert.match(template, /assertReallyMeRustProtoRepositoryPolicy/u);
   assert.match(template, /assertNoTemplateMarkers\(repositoryPolicy\)/u);
   assert.match(template, /validatePublishablePathDependencies: true/u);
-  assert.match(template, /version: "0\.6\.7"/u);
+  assert.match(template, /version: "0\.6\.8"/u);
   assert.match(template, /versionFromWorkflowEnv: true/u);
   assert.match(template, /installBufAction: "bufbuild\/buf-action"/u);
   assert.match(template, /REPLACE_SECRET_BYTE_FIELD/u);
@@ -4346,7 +4431,7 @@ test("vendored core policy rejects assertions hidden in strings", () => {
   const root = createTrackedFixture();
   writeFileSync(
     join(root, "scripts", "release-readiness", "core.mjs"),
-    `export const RELEASE_READINESS_VERSION = "0.6.7";
+    `export const RELEASE_READINESS_VERSION = "0.6.8";
 const assertReallyMeVendoredCorePolicy = () => {
   "assertGeneratedArtifactsFresh";
   "assertGeneratedProtoHardeningPolicy";

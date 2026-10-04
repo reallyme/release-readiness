@@ -69,7 +69,7 @@ current marker is:
 ```js
 assertContains(
   "core.mjs",
-  'RELEASE_READINESS_VERSION = "0.6.7"',
+  'RELEASE_READINESS_VERSION = "0.6.8"',
 );
 ```
 
@@ -104,7 +104,7 @@ Other exact requirements are intentional toolchain and release contracts:
 | Buffa generators | Exact workflow `BUFFA_VERSION` | Update the workflow value; a consumer may separately opt into an exact policy override |
 | cargo-fuzz template | Exact workflow `CARGO_FUZZ_VERSION` | Update the workflow value; both install lanes use that variable |
 | Node runtime | 24 in this repository | Review a runtime-major migration in this repository's workflow and checker |
-| Release-readiness package | 0.6.7 | Publish a new package revision and update consumer pins |
+| Release-readiness package | 0.6.8 | Publish a new package revision and update consumer pins |
 
 Dependabot does not update version literals embedded in checker source. The
 shared core therefore validates Buf, Buffa, and template cargo-fuzz versions
@@ -227,6 +227,15 @@ escape hatches. Facade files are explicit because Swift has no universal module
 facade filename. Its configuration text policy must prove repository-specific
 strict-concurrency and warnings-as-errors settings, while verification commands
 must cover `format`, `lint`, `build`, and `test`.
+
+An audited `@unchecked Sendable` or `@preconcurrency import NetworkExtension`
+bridge may be declared with its exact tracked file path, SHA-256 digest,
+accepted token, and review reason. Every changed byte requires a new digest.
+Bundled third-party Swift source may be declared only under a `Vendor/`
+directory with a tracked notice and the SHA-256 digest of the sorted
+`snapshotDirectory` entries serialized as JSON. The runner checks the entire
+directory, including non-Swift files, before excluding it from authored-source
+rules. Neither declaration disables checks for other authored Swift files.
 
 For authored Kotlin, use `assertKotlinSourcePolicy`. It rejects `!!`, unsafe
 casts, generic exceptions, terminating validation shortcuts, `lateinit`,
