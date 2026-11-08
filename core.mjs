@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 ReallyMe LLC
+// SPDX-FileCopyrightText: 2026 ReallyMe Technologies Limited
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
@@ -11,7 +11,7 @@ import { spawnSync } from "node:child_process";
 // This module is the release package's shared policy core. The public runner
 // supplies this exact immutable module to consumers so release-critical checks
 // cannot drift independently from the pinned package revision.
-export const RELEASE_READINESS_VERSION = "0.6.8";
+export const RELEASE_READINESS_VERSION = "0.6.9";
 
 const DEFAULT_FAILURE_PREFIX = "release readiness check failed";
 const MAX_PRODUCTION_SOURCE_LINES = 500;
@@ -1411,7 +1411,7 @@ export function createReleaseReadinessContext(options) {
       exclusions = [],
       requireExclusionsMatched = false,
       requireExclusionReasons = false,
-      copyright = "SPDX-FileCopyrightText: 2026 ReallyMe LLC",
+      copyright = "SPDX-FileCopyrightText: 2026 ReallyMe Technologies Limited",
       license = "SPDX-License-Identifier: MIT OR Apache-2.0",
     } = policy;
     for (const [policyName, values] of [

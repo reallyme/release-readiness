@@ -69,7 +69,7 @@ current marker is:
 ```js
 assertContains(
   "core.mjs",
-  'RELEASE_READINESS_VERSION = "0.6.8"',
+  'RELEASE_READINESS_VERSION = "0.6.9"',
 );
 ```
 
@@ -104,7 +104,7 @@ Other exact requirements are intentional toolchain and release contracts:
 | Buffa generators | Exact workflow `BUFFA_VERSION` | Update the workflow value; a consumer may separately opt into an exact policy override |
 | cargo-fuzz template | Exact workflow `CARGO_FUZZ_VERSION` | Update the workflow value; both install lanes use that variable |
 | Node runtime | 24 in this repository | Review a runtime-major migration in this repository's workflow and checker |
-| Release-readiness package | 0.6.8 | Publish a new package revision and update consumer pins |
+| Release-readiness package | 0.6.9 | Publish a new package revision and update consumer pins |
 
 Dependabot does not update version literals embedded in checker source. The
 shared core therefore validates Buf, Buffa, and template cargo-fuzz versions
@@ -304,6 +304,6 @@ Third-party components retain their own licenses and notices.
 
 ## Copyright And Trademarks
 
-Copyright © 2026 by ReallyMe LLC.
+Copyright © 2026 by ReallyMe Technologies Limited.
 
-ReallyMe<sup>®</sup> is a registered trademark of ReallyMe LLC.
+ReallyMe<sup>®</sup> is a registered trademark of ReallyMe Technologies Limited.
