@@ -19,8 +19,8 @@ The template enables the following mandatory baseline through
 
 - the checker is Git-tracked and imports the immutable core supplied by the
   package runner at its exact semantic release version;
-- GitHub Actions are pinned to immutable commits and Node jobs declare numeric
-  runtime versions of at least 24;
+- GitHub Actions are pinned to immutable commits and Node jobs declare the
+  Node 26 runtime explicitly;
 - action-specific checks match the action repository and require a full commit
   SHA, so reviewed workflow updates do not require changing the checker;
 - cargo-fuzz installs use the exact workflow `CARGO_FUZZ_VERSION`, are locked,

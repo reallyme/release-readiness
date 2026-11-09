@@ -30,10 +30,10 @@ const repositoryPolicy = {
   generatedFreshnessMode,
   releasePackage: {
     scriptPath: "scripts/check_release_readiness.mjs",
-    version: "0.6.9",
+    version: "0.7.0",
   },
   workflowActions: {},
-  nodeWorkflows: {},
+  nodeWorkflows: { nodeVersion: "26" },
   cargoFuzz: {
     workflow: ".github/workflows/fuzz.yml",
     versionFromWorkflowEnv: true,

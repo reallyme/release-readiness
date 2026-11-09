@@ -18,7 +18,8 @@ policy fixes from remaining trapped in stale local copies.
 
 - Git-tracked release inputs and repository-contained paths.
 - GitHub Actions pinned to full commit SHAs, with Node jobs using explicit
-  numeric versions of at least 24. This repository uses Node 24.
+  numeric versions of at least 26. This repository uses Node 26, and the
+  package runtime requires Node 26 or newer.
 - Workflow permissions matched structurally at the workflow and job scopes, and
   release-critical named steps matched as complete commands rather than loose
   substrings. Repeated step names can be scoped by job.
@@ -69,7 +70,7 @@ current marker is:
 ```js
 assertContains(
   "core.mjs",
-  'RELEASE_READINESS_VERSION = "0.6.9"',
+  'RELEASE_READINESS_VERSION = "0.7.0"',
 );
 ```
 
@@ -85,7 +86,7 @@ Run this repository's checks with:
 npm run check
 ```
 
-The GitHub Actions workflow runs the same command on Node 24.
+The GitHub Actions workflow runs the same command on Node 26.
 
 ## Keeping Pins Current
 
@@ -103,8 +104,8 @@ Other exact requirements are intentional toolchain and release contracts:
 | Buf CLI | Exact workflow `BUF_VERSION` | Update the workflow value; a consumer may separately opt into an exact policy override |
 | Buffa generators | Exact workflow `BUFFA_VERSION` | Update the workflow value; a consumer may separately opt into an exact policy override |
 | cargo-fuzz template | Exact workflow `CARGO_FUZZ_VERSION` | Update the workflow value; both install lanes use that variable |
-| Node runtime | 24 in this repository | Review a runtime-major migration in this repository's workflow and checker |
-| Release-readiness package | 0.6.9 | Publish a new package revision and update consumer pins |
+| Node runtime | 26 in this repository and template; consumer minimum and package engine `>=26` | Review a runtime-major migration in this repository's workflow, checker, template, and package engine |
+| Release-readiness package | 0.7.0 | Publish a new package revision and update consumer pins |
 
 Dependabot does not update version literals embedded in checker source. The
 shared core therefore validates Buf, Buffa, and template cargo-fuzz versions

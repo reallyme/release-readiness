@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   checks:
-    name: Node 24 release-readiness checks
+    name: Node 26 release-readiness checks
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -23,6 +23,6 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: "24"
+          node-version: "26"
       - name: Run release readiness checks
         run: npm run check

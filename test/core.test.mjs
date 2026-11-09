@@ -43,7 +43,7 @@ jobs:
       - name: Install Node
         uses: actions/setup-node@${fullSha} # pinned
         with:
-          node-version: "24"
+          node-version: "26"
       - run: echo unnamed-sibling
       - name: Run check
         run: |
@@ -573,7 +573,7 @@ test("workflow and text policies accept pinned, exact repository inputs", () => 
     ],
   });
   context.assertWorkflowActionsPinned();
-  context.assertNodeWorkflowJobsPinNode({ nodeVersion: "24" });
+  context.assertNodeWorkflowJobsPinNode({ nodeVersion: "26" });
   context.assertWorkflowUsesStep(
     ".github/workflows/checks.yaml",
     "Install Node",
@@ -1226,30 +1226,34 @@ jobs:
   assert.match(result.stderr, /uses Node tooling without actions\/setup-node/u);
 });
 
-test("Node workflow policy accepts explicit numeric pins without a shared version", () => {
+test("Node workflow policy requires numeric Node versions of at least 26", () => {
   const root = createFixture();
   const workflow = join(root, ".github", "workflows", "checks.yaml");
   const original = readFileSync(workflow, "utf8");
-  writeFileSync(workflow, original.replace('node-version: "24"', 'node-version: "26"'));
   const context = createContext(root);
   context.assertNodeWorkflowJobsPinNode();
+  context.assertNodeWorkflowJobsPinNode({ nodeVersion: "26" });
 
-  const exactVersion = runFixtureScript(
+  const unsupportedPolicyVersion = runFixtureScript(
     root,
     'context.assertNodeWorkflowJobsPinNode({ nodeVersion: "24" });',
   );
-  assert.equal(exactVersion.status, 1);
-  assert.match(exactVersion.stderr, /must pin Node 24/u);
+  assert.equal(unsupportedPolicyVersion.status, 1);
+  assert.match(unsupportedPolicyVersion.stderr, /version policy must be numeric and at least 26/u);
 
-  writeFileSync(workflow, original.replace('node-version: "24"', 'node-version: "lts/*"'));
+  writeFileSync(workflow, original.replace('node-version: "26"', 'node-version: "lts/*"'));
   const floatingVersion = runFixtureScript(root, "context.assertNodeWorkflowJobsPinNode();");
   assert.equal(floatingVersion.status, 1);
-  assert.match(floatingVersion.stderr, /must pin a numeric Node version of at least 24/u);
+  assert.match(floatingVersion.stderr, /must pin a numeric Node version of at least 26/u);
 
-  writeFileSync(workflow, original.replace('node-version: "24"', 'node-version: "20"'));
+  writeFileSync(workflow, original.replace('node-version: "26"', 'node-version: "24"'));
   const oldVersion = runFixtureScript(root, "context.assertNodeWorkflowJobsPinNode();");
   assert.equal(oldVersion.status, 1);
-  assert.match(oldVersion.stderr, /must pin a numeric Node version of at least 24/u);
+  assert.match(oldVersion.stderr, /must pin a numeric Node version of at least 26/u);
+
+  writeFileSync(workflow, original.replace('node-version: "26"', 'node-version: "28"'));
+  context.assertNodeWorkflowJobsPinNode();
+  context.assertNodeWorkflowJobsPinNode({ nodeVersion: "28" });
 });
 
 test("workflow action policy requires Docker digests and contained local paths", () => {
@@ -4148,7 +4152,7 @@ test("local checker template is syntactically valid and fails closed by construc
   assert.match(template, /assertReallyMeRustProtoRepositoryPolicy/u);
   assert.match(template, /assertNoTemplateMarkers\(repositoryPolicy\)/u);
   assert.match(template, /validatePublishablePathDependencies: true/u);
-  assert.match(template, /version: "0\.6\.9"/u);
+  assert.match(template, /version: "0\.7\.0"/u);
   assert.match(template, /versionFromWorkflowEnv: true/u);
   assert.match(template, /installBufAction: "bufbuild\/buf-action"/u);
   assert.match(template, /REPLACE_SECRET_BYTE_FIELD/u);
@@ -4431,7 +4435,7 @@ test("vendored core policy rejects assertions hidden in strings", () => {
   const root = createTrackedFixture();
   writeFileSync(
     join(root, "scripts", "release-readiness", "core.mjs"),
-    `export const RELEASE_READINESS_VERSION = "0.6.9";
+    `export const RELEASE_READINESS_VERSION = "0.7.0";
 const assertReallyMeVendoredCorePolicy = () => {
   "assertGeneratedArtifactsFresh";
   "assertGeneratedProtoHardeningPolicy";
