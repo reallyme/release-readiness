@@ -134,7 +134,7 @@ archetypes or excuse an architecture that belongs in another profile.
 
 ### `foundational-library`
 
-- Required: `crates`, `docs`, `scripts`, `.github`.
+- Required: `crates`, `contracts`, `docs`, `scripts`, `.github`.
 - Permitted: `crates`, `bindings`, `gen`, `packages`, `contracts`,
   `conformance`, `vectors`, `fuzz`, `examples`, `docs`, `scripts`, `.github`,
   `.cargo`.
@@ -143,6 +143,43 @@ This profile owns reusable technical or domain foundations. It may publish
 several focused crates, but it does not own an end-to-end protocol, application
 lifecycle, or deployment. Optional bindings and packages expose the same
 foundation rather than forming a separate developer product.
+
+Keep a tracked `contracts/README.md` for downstream consumers, including
+internal consumers. Cover the following in the contract:
+
+- **Consumer surface.** List the supported crates and entry points, feature
+  combinations, minimum Rust version, supported targets, and each crate's
+  internal or published status.
+- **Compatibility.** State what consumers can rely on across releases. Include
+  stable typed errors, accepted inputs, limits, canonical output, and applicable
+  external standards where they affect those promises.
+- **Verification.** Map promises to crate tests and downstream compile checks.
+  Cite independent vectors or conformance tests for externally visible formats
+  and behavior where applicable.
+
+The checker verifies that the file is tracked, regular, and nonempty. Reviewers
+assess whether its promises match the library and its release checks.
+
+A Rust library with one domain crate and no protobuf boundary can configure
+its consumer checker like this:
+
+```js
+context.assertRepositoryShapePolicy({
+  archetype: "foundational-library",
+  requiredLanes: ["crates", "contracts", "docs", "scripts", ".github"],
+  crates: [{ path: "crates/domain", role: "domain" }],
+});
+context.assertCargoWorkspacePolicy();
+context.assertRustSourcePolicy({ roots: ["."] });
+```
+
+Use the pinned runner and add Cargo metadata, workflow, SPDX, and verification
+checks for the library's actual release surface. Crate tests stay with the
+package, while reusable vectors and cross-component verification may use
+declared `vectors/` and `conformance/` lanes.
+
+Use the [Rust release policy](rust-release.md) to pin release CI, test the
+published crate MSRVs, and check the locked dependency graph.
 
 ### `protocol-engine`
 

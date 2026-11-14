@@ -32,11 +32,29 @@ if (packageJson.name !== "@reallyme/release-readiness") {
 if (packageJson.license !== "MIT OR Apache-2.0") {
   fail("package license must remain MIT OR Apache-2.0");
 }
+const dependencyLicenseBaseline = readText("templates/deny.toml")
+  .split(/\r?\n/u)
+  .map((line) => line.trim())
+  .filter((line) => line.length !== 0 && !line.startsWith("#"))
+  .join("\n");
+if (dependencyLicenseBaseline !== `[licenses]
+allow = [
+"MIT",
+"Apache-2.0",
+"BSD-2-Clause",
+"BSD-3-Clause",
+"ISC",
+"Zlib",
+"BlueOak-1.0.0",
+"Unicode-3.0",
+]`) {
+  fail("Cargo Deny template must contain the approved dependency license baseline");
+}
 if (packageJson.version !== RELEASE_READINESS_VERSION) {
   fail("package version must match the shared core release version");
 }
-if (RELEASE_READINESS_VERSION !== "0.7.0") {
-  fail("package version must remain 0.7.0 for this release");
+if (RELEASE_READINESS_VERSION !== "0.8.0") {
+  fail("package version must remain 0.8.0 for this release");
 }
 if (
   JSON.stringify(packageJson.files) !==
@@ -57,7 +75,7 @@ for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]
   }
 }
 
-assertContains("core.mjs", 'RELEASE_READINESS_VERSION = "0.7.0"');
+assertContains("core.mjs", 'RELEASE_READINESS_VERSION = "0.8.0"');
 assertNotContains("core.mjs", "RELEASE_READINESS_CORE_CONTRACT_VERSION");
 assertContains("package.json", '"reallyme-release-readiness": "scripts/run-consumer-check.mjs"');
 assertContains("scripts/run-consumer-check.mjs", "RELEASE_READINESS_CORE_URL");
@@ -134,6 +152,8 @@ assertContains(
 assertContains("core.mjs", "assertGeneratedArtifactsFresh");
 assertContains("core.mjs", "assertGeneratedProtoHardeningPolicy");
 assertContains("core.mjs", "assertReallyMeProtobufReleasePolicy");
+assertContains("core.mjs", "assertProtobufFirstPolicy");
+assertContains("README.md", "docs/protobuf-first.md");
 assertContains("core.mjs", "assertWorkflowChangePathCovered");
 assertContains("core.mjs", 'checkerPath = "scripts/check_release_readiness.mjs"');
 assertContains("core.mjs", "corePath = null");
@@ -149,6 +169,8 @@ assertContains("core.mjs", "assertReallyMeVendoredCorePolicy");
 assertContains("core.mjs", "assertReallyMeRustProtoRepositoryPolicy");
 assertContains("core.mjs", "assertCargoMetadataPolicy");
 assertContains("core.mjs", "assertCargoWorkspacePolicy");
+assertContains("core.mjs", "assertRustReleasePolicy");
+assertContains("README.md", "docs/rust-release.md");
 assertContains("core.mjs", "assertRepositoryShapePolicy");
 assertContains("core.mjs", "forbids compatibility proto package");
 assertContains("core.mjs", "assertRustSourcePolicy");
@@ -195,9 +217,9 @@ assertContains("README.md", "Generated protobuf hardening checks");
 assertContains("README.md", "Granular provider contracts");
 assertContains("README.md", "retired-path enforcement");
 assertContains("README.md", "buf generate");
-assertContains("README.md", "harden-generated-example-proto.mjs");
+assertContains("README.md", "ReallyMe Buffa generator");
 assertContains("README.md", "actions/workflows/checks.yml/badge.svg");
-assertContains("README.md", 'RELEASE_READINESS_VERSION = "0.7.0"');
+assertContains("README.md", 'RELEASE_READINESS_VERSION = "0.8.0"');
 assertContains("README.md", "repository: reallyme/release-readiness");
 assertContains("README.md", "ref: FULL_RELEASE_READINESS_COMMIT_SHA");
 assertContains("README.md", "persist-credentials: false");
@@ -223,9 +245,10 @@ for (const needle of [
   "requireTrackedFiles: true",
   "assertNoTemplateMarkers(repositoryPolicy)",
   "validatePublishablePathDependencies: true",
+  "rustRelease: {",
   "reallyMeLatestStableDependencies: true",
   "rustSource: {",
-  'version: "0.7.0"',
+  'version: "0.8.0"',
   "repositoryShape: {",
   'archetype: "protocol-engine"',
   "typescriptSource: {",
@@ -252,11 +275,15 @@ for (const needle of [
   "requiredInstallSteps: [",
   "versionFromWorkflowEnv: true",
   'installBufAction: "bufbuild/buf-action"',
+  "docs/protobuf-first.md",
+  '["buf", ["generate"]]',
   'checkerPath: "scripts/check_release_readiness.mjs"',
   "node .release-readiness/scripts/run-consumer-check.mjs --generated-freshness",
 ]) {
   assertTemplateContains(needle);
 }
+assertNotContains(templatePath, "hardeningScript");
+assertNotContains(templatePath, "--check-idempotent");
 assertNotContains(
   "templates/check_release_readiness.mjs",
   "requireTrackedFiles: false",

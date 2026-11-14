@@ -110,5 +110,8 @@ if (result.status === 0) {
       failure(`consumer checker did not enforce the shared ${language} source policy`);
     }
   }
+  if (trackedFiles.includes("Cargo.toml") && !reportedSourcePolicies.has("rust-release")) {
+    failure("consumer checker did not enforce the shared Rust release policy");
+  }
 }
 process.exit(result.status);

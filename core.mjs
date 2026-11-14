@@ -11,11 +11,28 @@ import { spawnSync } from "node:child_process";
 // This module is the release package's shared policy core. The public runner
 // supplies this exact immutable module to consumers so release-critical checks
 // cannot drift independently from the pinned package revision.
-export const RELEASE_READINESS_VERSION = "0.7.0";
+export const RELEASE_READINESS_VERSION = "0.8.0";
 
 const DEFAULT_FAILURE_PREFIX = "release readiness check failed";
 const MAX_PRODUCTION_SOURCE_LINES = 500;
 const MAX_SEPARATE_TEST_SOURCE_LINES = 800;
+const RUST_RELEASE_TOOLCHAIN = "1.100.0";
+const CARGO_DENY_VERSION = "0.20.2";
+const REALLYME_BUFFA_RUNTIME = "reallyme-buffa";
+const REALLYME_BUFFA_GENERATORS = [
+  { package: "reallyme-protoc-gen-buffa", executable: "protoc-gen-reallyme-buffa" },
+  {
+    package: "reallyme-protoc-gen-buffa-packaging",
+    executable: "protoc-gen-reallyme-buffa-packaging",
+  },
+];
+const isUpstreamBuffaPackage = (name) =>
+  typeof name === "string" &&
+  /^(?:buffa(?:-[a-z0-9_-]+)?|protoc-gen-buffa(?:-packaging)?)$/u.test(name);
+const REALLYME_ENGINEERING_REFERENCES = [
+  "https://github.com/reallyme/.github/blob/main/ENGINEERING_PHILOSOPHY.md",
+  "https://github.com/reallyme/.github/blob/main/ARCHITECTURE.md",
+];
 const DEFAULT_REALLYME_LATEST_STABLE_DEPENDENCIES = [
   "reallyme-crypto",
   "reallyme-codec",
@@ -514,7 +531,7 @@ export function createReleaseReadinessContext(options) {
     process.exit(1);
   };
 
-  const reportSourcePolicy = (language) => {
+  const reportPolicy = (policy) => {
     if (
       process.env.RELEASE_READINESS_ENFORCED_VERSION !== RELEASE_READINESS_VERSION ||
       process.env.RELEASE_READINESS_SOURCE_POLICY_FD !== "3"
@@ -522,9 +539,9 @@ export function createReleaseReadinessContext(options) {
       return;
     }
     try {
-      writeSync(3, `${language}\n`);
+      writeSync(3, `${policy}\n`);
     } catch {
-      fail(`could not report the enforced ${language} source policy`);
+      fail(`could not report the enforced ${policy} policy`);
     }
   };
 
@@ -1270,20 +1287,23 @@ export function createReleaseReadinessContext(options) {
     return packagesByName;
   };
 
+  const readCargoMetadata = (args) => {
+    const result = run("cargo", args, { capture: true });
+    try {
+      return JSON.parse(result.stdout);
+    } catch {
+      fail("cargo metadata returned malformed JSON");
+    }
+  };
+
   const assertCargoMetadataPolicy = (policy) => {
-    const metadataArgs = policy?.metadataArgs ?? [
+    const metadata = readCargoMetadata(policy?.metadataArgs ?? [
       "metadata",
       "--format-version",
       "1",
       "--no-deps",
-    ];
-    const metadataResult = run("cargo", metadataArgs, { capture: true });
-    let metadata;
-    try {
-      metadata = JSON.parse(metadataResult.stdout);
-    } catch {
-      fail("cargo metadata returned malformed JSON");
-    }
+      "--locked",
+    ]);
     return assertCargoMetadataDocument(metadata, policy);
   };
 
@@ -1293,20 +1313,10 @@ export function createReleaseReadinessContext(options) {
       requirePublishInclude = true,
       validatePublishablePathDependencies = true,
     } = policy;
-    const metadataResult = run(
-      "cargo",
-      ["metadata", "--format-version", "1", "--no-deps"],
-      { capture: true },
-    );
-    let metadata;
-    try {
-      metadata = JSON.parse(metadataResult.stdout);
-    } catch {
-      fail("cargo metadata returned malformed JSON");
-    }
+    const metadata = readCargoMetadata(["metadata", "--format-version", "1", "--no-deps", "--locked"]);
     if (
-      !Array.isArray(metadata.packages) ||
-      !Array.isArray(metadata.workspace_members)
+      !Array.isArray(metadata?.packages) ||
+      !Array.isArray(metadata?.workspace_members)
     ) {
       fail("cargo workspace metadata is malformed");
     }
@@ -1512,7 +1522,7 @@ export function createReleaseReadinessContext(options) {
     }
     const archetypes = {
       "foundational-library": {
-        required: ["crates", "docs", "scripts", ".github"],
+        required: ["crates", "contracts", "docs", "scripts", ".github"],
         permitted: [
           "crates",
           "bindings",
@@ -1962,6 +1972,13 @@ export function createReleaseReadinessContext(options) {
     for (const lane of requiredLaneSet) {
       if (!observedRootLanes.has(lane)) {
         fail(`repository shape required lane ${lane} has no tracked files`);
+      }
+    }
+    if (archetype === "foundational-library") {
+      const contractPath = "contracts/README.md";
+      requireTracked(contractPath);
+      if (readText(contractPath).trim().length === 0) {
+        fail(`${contractPath} must document the library's consumer contract`);
       }
     }
     for (const path of exceptionPaths) {
@@ -2527,7 +2544,7 @@ export function createReleaseReadinessContext(options) {
         fail(`${path} baseline is stale because the file is now within target ${target}`);
       }
     }
-    reportSourcePolicy("rust");
+    reportPolicy("rust");
   };
 
   const assertLanguageVerificationPolicy = (language, verification, requiredRoles) => {
@@ -2959,7 +2976,7 @@ export function createReleaseReadinessContext(options) {
       verification,
       ["typecheck", "lint", "test"],
     );
-    reportSourcePolicy("typescript");
+    reportPolicy("typescript");
   };
 
   const assertSwiftSourcePolicy = (policy = {}) => {
@@ -3123,7 +3140,7 @@ export function createReleaseReadinessContext(options) {
       verification,
       ["format", "lint", "build", "test"],
     );
-    reportSourcePolicy("swift");
+    reportPolicy("swift");
   };
 
   const assertKotlinSourcePolicy = (policy = {}) => {
@@ -3212,7 +3229,7 @@ export function createReleaseReadinessContext(options) {
       verification,
       ["format", "static-analysis", "compile", "test"],
     );
-    reportSourcePolicy("kotlin");
+    reportPolicy("kotlin");
   };
 
   const snapshotDirectory = (path) => {
@@ -3271,7 +3288,7 @@ export function createReleaseReadinessContext(options) {
     for (const [file, contents] of before) {
       const regenerated = after.get(file);
       if (regenerated === undefined || contents !== regenerated) {
-        fail(`${path}/${file} is stale; run the protobuf generation and hardening steps`);
+        fail(`${path}/${file} is stale; run the configured protobuf regeneration steps`);
       }
     }
   };
@@ -3383,72 +3400,11 @@ export function createReleaseReadinessContext(options) {
     }
   };
 
-  const assertGeneratedProtoHardeningPolicy = (policy) => {
-    const {
-      hardeningScript,
-      protoSchema,
-      generatedRust,
-      generatedView,
-      protoCargo,
-      workflow,
-      workflowStepName,
-      workflowStepRun,
-      requiredScriptNeedles = [],
-      forbiddenScriptNeedles = [],
-      requiredGeneratedNeedles = [],
-      forbiddenGeneratedNeedles = [],
-      requiredViewNeedles = [],
-      requiredCargoNeedles = [],
-      scalarFieldClassifications = [],
-      additionalGeneratedPolicies = [],
-      requireIdempotence = true,
-      requireStrictJson = true,
-      requireUnknownFieldZeroization = true,
-    } = policy ?? {};
-
-    if (typeof hardeningScript !== "string" || hardeningScript.length === 0) {
-      fail("generated proto hardening policy requires a hardeningScript path");
-    }
-    if (typeof generatedRust !== "string" || generatedRust.length === 0) {
-      fail("generated proto hardening policy requires a generatedRust path");
-    }
-    if (typeof protoSchema !== "string" || protoSchema.length === 0) {
-      fail("generated proto hardening policy requires a protoSchema path");
-    }
-    for (const [policyName, needles] of [
-      ["required script", requiredScriptNeedles],
-      ["forbidden script", forbiddenScriptNeedles],
-      ["required generated", requiredGeneratedNeedles],
-      ["forbidden generated", forbiddenGeneratedNeedles],
-      ["required view", requiredViewNeedles],
-      ["required Cargo", requiredCargoNeedles],
-    ]) {
-      if (
-        !Array.isArray(needles) ||
-        needles.some((needle) => typeof needle !== "string")
-      ) {
-        fail(`generated proto ${policyName} policy must be an array of strings`);
-      }
-    }
-    if (requiredScriptNeedles.length === 0) {
-      fail("generated proto hardening policy requires script invariants");
-    }
-    if (typeof requireIdempotence !== "boolean") {
-      fail("generated proto hardening idempotence policy must be a boolean");
-    }
-    if (requiredGeneratedNeedles.length === 0) {
-      fail("generated proto hardening policy requires generated-code invariants");
-    }
-    if (forbiddenGeneratedNeedles.length === 0) {
-      fail("generated proto hardening policy requires forbidden generated-code invariants");
-    }
+  const classifyProtoScalars = (protoSchema, protoText, scalarFieldClassifications) => {
     if (!Array.isArray(scalarFieldClassifications)) {
       fail("generated proto scalar field classifications must be an array");
     }
-    if (scalarFieldClassifications.length === 0) {
-      fail("generated proto hardening policy requires scalar field classifications");
-    }
-    const normalizedScalarFieldClassifications = scalarFieldClassifications.map((entry) => {
+    const classifications = scalarFieldClassifications.map((entry) => {
       if (
         entry !== null &&
         typeof entry === "object" &&
@@ -3475,49 +3431,28 @@ export function createReleaseReadinessContext(options) {
       );
     });
     const classificationKeys = new Set();
-    for (const entry of normalizedScalarFieldClassifications) {
+    for (const entry of classifications) {
       const key = `${entry.message}.${entry.field}:${entry.kind}`;
       if (classificationKeys.has(key)) {
         fail(`generated proto scalar classification is duplicated for ${key}`);
       }
       classificationKeys.add(key);
     }
-    const protoText = scrubProtoCommentsAndStrings(readText(protoSchema));
     const scalarSchemaKeys = new Set();
-    const messagePattern = /^\s*message\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{/gmu;
-    for (const messageMatch of protoText.matchAll(messagePattern)) {
-      const openIndex = messageMatch.index + messageMatch[0].lastIndexOf("{");
-      let depth = 0;
-      let closeIndex = -1;
-      for (let index = openIndex; index < protoText.length; index += 1) {
-        if (protoText[index] === "{") {
-          depth += 1;
-        } else if (protoText[index] === "}") {
-          depth -= 1;
-          if (depth === 0) {
-            closeIndex = index;
-            break;
-          }
-        }
+    if (/\bextend\s+[.A-Za-z_][.A-Za-z0-9_]*\s*\{/u.test(protoText)) {
+      fail(`${protoSchema} protobuf extensions require an explicit scalar-classifier extension`);
+    }
+    for (const { name, body } of extractProtoBlocks(protoText, "message")) {
+      if (/\b(?:message|group)\s+[A-Za-z_][A-Za-z0-9_]*\b[^;{}]*\{/u.test(body)) {
+        fail(`${protoSchema} nested messages or groups require an explicit scalar-classifier extension`);
       }
-      if (closeIndex === -1) {
-        fail(`${protoSchema} has an unterminated message ${messageMatch[1]}`);
-      }
-      const body = protoText.slice(openIndex + 1, closeIndex);
-      if (/^\s+message\s+[A-Za-z_][A-Za-z0-9_]*\s*\{/mu.test(body)) {
-        fail(
-          `${protoSchema} nested messages require an explicit scalar-classifier extension`,
-        );
-      }
-      if (/\bmap\s*<[^>]*(?:bytes|string)[^>]*>/u.test(body)) {
-        fail(
-          `${protoSchema} maps with bytes/string members require an explicit scalar-classifier extension`,
-        );
+      if (/\bmap\s*<\s*(?:string\s*,|[A-Za-z_][A-Za-z0-9_]*\s*,\s*(?:bytes|string)\s*>)/u.test(body)) {
+        fail(`${protoSchema} maps with bytes/string members require an explicit scalar-classifier extension`);
       }
       for (const fieldMatch of body.matchAll(
-        /(?:^|[;{}])\s*(?:(?:optional|required|repeated)\s+)?(bytes|string)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\d+(?:\s*\[[^\]]*\])?\s*(?=;)/gmu,
+        /(?:^|[;{}])\s*(?:(?:optional|required|repeated)\s+)?(bytes|string)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\d+\s*(?=[\[;])/gu,
       )) {
-        scalarSchemaKeys.add(`${messageMatch[1]}.${fieldMatch[2]}:${fieldMatch[1]}`);
+        scalarSchemaKeys.add(`${name}.${fieldMatch[2]}:${fieldMatch[1]}`);
       }
     }
     for (const key of scalarSchemaKeys) {
@@ -3530,152 +3465,157 @@ export function createReleaseReadinessContext(options) {
         fail(`generated proto scalar classification is stale for ${key}`);
       }
     }
-    const sensitiveScalarFields = normalizedScalarFieldClassifications.filter(
-      (entry) => entry.sensitivity === "sensitive",
-    );
-    if (sensitiveScalarFields.length === 0) {
-      fail("generated proto hardening policy requires at least one sensitive scalar field");
+    return classifications.filter(({ sensitivity }) => sensitivity === "sensitive");
+  };
+
+  const assertGeneratedProtoHardeningPolicy = (policy) => {
+    const {
+      protoSchema,
+      generatedRust,
+      scalarFieldClassifications,
+      bufGen = "buf.gen.yaml",
+      buffaVersion,
+    } = policy ?? {};
+    const supportedKeys = ["protoSchema", "generatedRust", "scalarFieldClassifications", "bufGen", "buffaVersion"];
+    if (
+      policy === null || typeof policy !== "object" || Array.isArray(policy) ||
+      Object.keys(policy).some((key) => !supportedKeys.includes(key))
+    ) {
+      fail("configure native Buffa hardening with protoSchema, generatedRust and scalarFieldClassifications; remove legacy hardening script settings");
     }
-    if (!Array.isArray(additionalGeneratedPolicies)) {
-      fail("additional generated hardening policies must be an array");
-    }
-    for (const [policyName, value] of [
-      ["generated view", generatedView],
-      ["proto Cargo", protoCargo],
-      ["workflow", workflow],
-      ["workflow step name", workflowStepName],
-      ["workflow step run", workflowStepRun],
-    ]) {
-      if (value !== undefined && typeof value !== "string") {
-        fail(`generated proto ${policyName} policy must be a string`);
+    for (const [name, path] of Object.entries({ protoSchema, generatedRust, bufGen })) {
+      if (typeof path !== "string" || path.trim().length === 0) {
+        fail(`native Buffa hardening policy requires a ${name} path`);
       }
     }
-    if (
-      typeof generatedView === "string" &&
-      generatedView.length !== 0 &&
-      requiredViewNeedles.length === 0
-    ) {
-      fail("generated proto hardening policy requires generated view invariants");
-    }
-    if (
-      typeof protoCargo === "string" &&
-      protoCargo.length !== 0 &&
-      requiredCargoNeedles.length === 0
-    ) {
-      fail("generated proto hardening policy requires proto Cargo invariants");
-    }
-    const workflowValues = [workflow, workflowStepName, workflowStepRun];
-    const configuredWorkflowValues = workflowValues.filter(
-      (value) => typeof value === "string" && value.length !== 0,
-    );
-    if (
-      configuredWorkflowValues.length !== 0 &&
-      configuredWorkflowValues.length !== workflowValues.length
-    ) {
-      fail("generated proto workflow policy must configure path, step name, and run command");
+    if (typeof buffaVersion !== "string" || !/^\d+\.\d+\.\d+$/u.test(buffaVersion)) {
+      fail("native Buffa hardening policy requires an exact Buffa version");
     }
 
-    for (const needle of requiredScriptNeedles) {
-      assertContains(hardeningScript, needle);
+    const protoText = scrubProtoCommentsAndStrings(readText(protoSchema));
+    const sensitiveFields = classifyProtoScalars(protoSchema, protoText, scalarFieldClassifications);
+    const options = assertReallyMeBuffaPlugins(bufGen);
+    const generated = readText(generatedRust).replaceAll("\r\n", "\n");
+    if (!generated.startsWith(`// @generated by reallyme-buffa-codegen ${buffaVersion}. DO NOT EDIT.\n`)) {
+      fail(`${generatedRust} must identify the pinned native Buffa generator ${buffaVersion}`);
     }
-    if (requireIdempotence) {
-      assertContains(hardeningScript, '"--check-idempotent"');
+    const source = scrubRustCommentsAndStrings(generated);
+    if (/\b__reallyme_\w*/u.test(source)) {
+      fail(`${generatedRust} contains a legacy hardening shim; regenerate with native Buffa`);
     }
-    for (const needle of forbiddenScriptNeedles) {
-      assertNotContains(hardeningScript, needle);
+    if (sensitiveFields.length === 0) {
+      return;
     }
-    const generatedRustText = readText(generatedRust);
-    const messageRegion = (message) => {
-      const startNeedle = `pub struct ${message} {`;
-      const start = generatedRustText.indexOf(startNeedle);
-      if (start === -1) {
-        fail(`${generatedRust} does not define generated message ${message}`);
+
+    // Buffa resolves selectors by protobuf path segments. Custom owners use
+    // the last matching selector, so a narrower rule can replace a default.
+    const matchesSelector = (selector, path) => {
+      if (!/^(?:\.|\.?[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\.*)$/u.test(selector)) {
+        fail(`${bufGen} contains an invalid native Buffa protobuf selector`);
       }
-      const remainder = generatedRustText.slice(start + startNeedle.length);
-      const nextMessage = /^pub struct [A-Z][A-Za-z0-9]* \{/gmu.exec(remainder);
-      const end =
-        nextMessage === null
-          ? generatedRustText.length
-          : start + startNeedle.length + nextMessage.index;
-      return generatedRustText.slice(start, end);
+      const prefix = selector === "." ? selector : `.${selector.replace(/^\.|\.+$/gu, "")}`;
+      return prefix === "." || path === prefix || path.startsWith(`${prefix}.`);
     };
-    for (const { field, kind, message } of sensitiveScalarFields) {
-      const scope = messageRegion(message);
-      for (const needle of [
-        `.field("${field}", &"<redacted>")`,
-        `::zeroize::Zeroize::zeroize(&mut self.${field});`,
-        kind === "bytes"
-          ? `${field}: ::zeroize::Zeroizing<::buffa::alloc::vec::Vec<u8>>`
-          : `${field}: ::zeroize::Zeroizing<::buffa::alloc::string::String>`,
-      ]) {
-        if (!scope.includes(needle)) {
-          fail(`${generatedRust} message ${message} does not contain ${needle}`);
-        }
+    const selects = (option, path) => options.some(
+      ([key, selector, extra]) => key === option && selector !== undefined &&
+        extra === undefined && matchesSelector(selector, path),
+    );
+    const booleanOption = (name, fallback) => {
+      const matches = options.filter(([key]) => key === name);
+      if (matches.length === 0) {
+        return fallback;
       }
-      if (scope.includes(`.field("${field}", &self.${field})`)) {
-        fail(`${generatedRust} message ${message} must not expose ${field} in generated Debug output`);
+      if (matches.length !== 1 || matches[0].length !== 2 || !["true", "false"].includes(matches[0][1])) {
+        fail(`${bufGen} must set native Buffa option ${name} at most once to true or false`);
       }
-      // Buffa's generated message storage remains Vec<u8>. Sensitive
-      // ProtoJSON decoding must stage bytes in a zeroizing temporary, while
-      // generated clear and Drop paths wipe the final generated field owner.
-    }
-    if (requireStrictJson) {
-      assertContains(generatedRust, "#[serde(default, deny_unknown_fields)]");
-    }
-    if (requireUnknownFieldZeroization) {
-      for (const needle of [
-        "::buffa::UnknownFieldData::LengthDelimited(bytes)",
-        "::buffa::UnknownFieldData::Group(fields)",
-        "__reallyme_zeroize_unknown_fields(fields);",
-      ]) {
-        assertContains(hardeningScript, needle);
-      }
-      assertContains(generatedRust, "fn __reallyme_zeroize_unknown_fields(");
-      assertContains(
-        generatedRust,
-        "::buffa::UnknownFieldData::LengthDelimited(bytes)",
+      return matches[0][1] === "true";
+    };
+    const zeroize = booleanOption("zeroize", false);
+    const preserveUnknown = booleanOption("unknown_fields", true);
+    const strictJson = booleanOption("deny_unknown_json_fields", false);
+    const packageName = /\bpackage\s+([A-Za-z_][A-Za-z0-9_.]*)\s*;/u.exec(protoText)?.[1];
+    const messagePaths = new Set();
+    for (const { message, field, kind } of sensitiveFields) {
+      const messagePath = packageName === undefined ? `.${message}` : `.${packageName}.${message}`;
+      const fieldPath = `${messagePath}.${field}`;
+      messagePaths.add(messagePath);
+      const owner = options.findLast(
+        ([key, selector]) => key === `${kind}_type_custom_in` &&
+          selector !== undefined && matchesSelector(selector, fieldPath),
       );
-      assertContains(
-        generatedRust,
-        "::buffa::UnknownFieldData::Group(fields)",
-      );
-      assertContains(
-        generatedRust,
-        "__reallyme_zeroize_unknown_fields(fields);",
-      );
-      assertContains(
-        generatedRust,
-        "__reallyme_zeroize_unknown_fields(&mut self.__buffa_unknown_fields);",
-      );
-    }
-    for (const needle of requiredGeneratedNeedles) {
-      assertContains(generatedRust, needle);
-    }
-    for (const needle of forbiddenGeneratedNeedles) {
-      assertNotContains(generatedRust, needle);
-    }
-    if (typeof generatedView === "string" && generatedView.length !== 0) {
-      for (const needle of requiredViewNeedles) {
-        assertContains(generatedView, needle);
+      if (owner?.length !== 3 || owner[2].length === 0) {
+        fail(`${bufGen} must configure a guarded ${kind} owner for ${fieldPath}`);
+      }
+      // Buffa checks the Rust owner traits and routes ProtoJSON through this
+      // type's ProtoBytesJson or ProtoStringJson implementation.
+      const ownerType = owner[2].replace(/\s+/gu, "");
+      if (!options.some(([key, value, extra]) => key === "json_policy_type" &&
+        value?.replace(/\s+/gu, "") === ownerType && extra === undefined)) {
+        fail(`${bufGen} must configure json_policy_type for the guarded owner of ${fieldPath}`);
       }
     }
-    if (typeof protoCargo === "string" && protoCargo.length !== 0) {
-      for (const needle of requiredCargoNeedles) {
-        assertContains(protoCargo, needle);
+
+    // The MessageName impl binds the Rust identifier (which may be prefixed)
+    // to the protobuf message whose generator settings were just verified.
+    const rustMessages = new Map();
+    for (const match of generated.matchAll(
+      /^impl ::buffa::MessageName for ((?:r#)?[A-Za-z_][A-Za-z0-9_]*)\s*\{[^}]*?\bconst FULL_NAME:\s*&'static str\s*=\s*"([A-Za-z0-9_.]+)";/gmu,
+    )) {
+      if (source.startsWith("impl ::buffa::MessageName for ", match.index)) {
+        rustMessages.set(`.${match[2]}`, match[1]);
       }
     }
-    for (const generatedPolicy of additionalGeneratedPolicies) {
-      assertTextPolicy({ files: [generatedPolicy] });
-    }
-    if (
-      typeof workflow === "string" &&
-      workflow.length !== 0 &&
-      typeof workflowStepName === "string" &&
-      workflowStepName.length !== 0 &&
-      typeof workflowStepRun === "string" &&
-      workflowStepRun.length !== 0
-    ) {
-      assertWorkflowRunStep(workflow, workflowStepName, workflowStepRun);
+    for (const path of messagePaths) {
+      if (!zeroize && !selects("zeroize_in", path)) {
+        fail(`${bufGen} must enable native zeroization for ${path}`);
+      }
+      if (preserveUnknown || selects("unknown_fields_in", path)) {
+        fail(`${bufGen} must disable binary unknown-field storage for ${path}`);
+      }
+      if (!strictJson && !selects("deny_unknown_json_fields_in", path)) {
+        fail(`${bufGen} must reject unknown ProtoJSON fields for ${path}`);
+      }
+      if (!selects("borrowed_views_only_in", path)) {
+        fail(`${bufGen} must use borrowed-only Buffa views for ${path}`);
+      }
+      if (selects("skip_debug", path)) {
+        fail(`${bufGen} must keep native Debug redaction for ${path}`);
+      }
+      const name = rustMessages.get(path);
+      if (name === undefined) {
+        fail(`${generatedRust} is missing native Buffa message ${path}`);
+      }
+      const drop = new RegExp(
+        `^impl ::core::ops::Drop for ${name}\\s*\\{\\s*fn drop\\(&mut self\\)\\s*\\{\\s*::buffa::sensitive::Zeroize::zeroize\\(self\\);\\s*\\}\\s*\\}`,
+        "mu",
+      );
+      if (
+        !source.includes(`impl ::buffa::sensitive::Zeroize for ${name} {`) ||
+        !source.includes(`impl ::buffa::sensitive::ZeroizeOnDrop for ${name} {}`) ||
+        !drop.test(source)
+      ) {
+        fail(`${generatedRust} is missing native Buffa zeroization for ${path}`);
+      }
+      const message = new RegExp(`^pub struct ${name}\\s*\\{[^}]*\\}`, "mu").exec(source);
+      if (message === null || /\b__buffa_unknown_fields\b/u.test(message[0])) {
+        fail(`${generatedRust} must define ${path} without binary unknown-field storage`);
+      }
+      const deserialize = new RegExp(
+        `^impl<'de> ::serde::Deserialize<'de> for ${name}\\s*\\{[\\s\\S]*?^\\}`,
+        "mu",
+      ).exec(source);
+      if (!deserialize?.[0].includes("::buffa::sensitive::JsonErrorReason::UnknownField")) {
+        fail(`${generatedRust} must reject unknown ProtoJSON fields for ${path}`);
+      }
+      const debug = new RegExp(`^impl ::core::fmt::Debug for ${name}\\s*\\{[\\s\\S]*?^\\}`, "mu").exec(source);
+      const debugBody = debug === null ? "" : generated.slice(debug.index, debug.index + debug[0].length);
+      const fields = [...debugBody.matchAll(/\.field\s*\(/gu)];
+      if (fields.length === 0 || fields.some(({ index }) =>
+        !/^\.field\(\s*"[A-Za-z_][A-Za-z0-9_]*",\s*&::core::format_args!\("\[REDACTED\]"\),?\s*\)/u
+          .test(debugBody.slice(index)),
+      )) {
+        fail(`${generatedRust} is missing native Buffa Debug redaction for ${path}`);
+      }
     }
   };
 
@@ -3744,6 +3684,153 @@ export function createReleaseReadinessContext(options) {
     return version;
   };
 
+  const assertReallyMeBuffaRuntime = (protoCargo, version) => {
+    if (requireTrackedFiles) {
+      requireTracked(protoCargo);
+    }
+    const manifestPath = assertRegularFile(protoCargo);
+    // Cargo interprets workspace inheritance, aliases, and dependency source
+    // declarations. Reading metadata avoids matching unused or commented TOML.
+    const metadata = readCargoMetadata([
+      "metadata", "--format-version", "1", "--no-deps", "--locked", "--offline",
+      "--manifest-path", manifestPath,
+    ]);
+    if (!Array.isArray(metadata?.packages)) {
+      fail("Cargo metadata must expose the protobuf package");
+    }
+    assertNoUpstreamBuffaDependencies(metadata.packages);
+    const protoPackage = metadata.packages.find((candidate) => candidate?.manifest_path === manifestPath);
+    if (typeof protoPackage?.name !== "string") {
+      fail(`${protoCargo} must identify a Cargo package`);
+    }
+    assertCargoMetadataDocument(metadata, {
+      packages: [
+        {
+          name: protoPackage.name,
+          dependencies: [
+            {
+              name: REALLYME_BUFFA_RUNTIME,
+              rename: "buffa",
+              kind: null,
+              target: null,
+              source: "registry",
+              requirement: `=${version}`,
+            },
+          ],
+        },
+      ],
+    });
+    for (const dependency of protoPackage.dependencies) {
+      const isBuffaAlias = dependency.rename === "buffa";
+      const matchesToolchain = dependency.name === REALLYME_BUFFA_RUNTIME &&
+        dependency.req === `=${version}` && dependency.source?.startsWith("registry+");
+      if (isBuffaAlias && !matchesToolchain) {
+        fail(`${protoCargo} must use only the exact registry ${REALLYME_BUFFA_RUNTIME} runtime as buffa`);
+      }
+    }
+    const runtime = protoPackage.dependencies.find((dependency) =>
+      dependency.name === REALLYME_BUFFA_RUNTIME && dependency.rename === "buffa" &&
+      dependency.kind === null && dependency.target === null,
+    );
+    if (runtime === undefined || !Array.isArray(runtime.features) ||
+        protoPackage.features === null || typeof protoPackage.features !== "object" ||
+        !Object.values(protoPackage.features).every((entries) => Array.isArray(entries))) {
+      fail(`${protoCargo} has malformed Cargo feature metadata`);
+    }
+    const forwardedFeatures = Object.values(protoPackage.features).flat();
+    for (const feature of ["json", "zeroize"]) {
+      if (
+        !runtime.features.includes(feature) &&
+        !forwardedFeatures.includes(`buffa/${feature}`) &&
+        !forwardedFeatures.includes(`buffa?/${feature}`)
+      ) {
+        fail(`${protoCargo} must enable the ${feature} feature on buffa`);
+      }
+    }
+  };
+
+  const assertNoUpstreamBuffaDependencies = (packages) => {
+    for (const cargoPackage of packages) {
+      for (const dependency of cargoPackage.dependencies ?? []) {
+        if (isUpstreamBuffaPackage(dependency.name)) {
+          fail(`Cargo package ${cargoPackage.name} depends on upstream ${dependency.name}; use its ReallyMe Buffa counterpart`);
+        }
+      }
+    }
+  };
+
+  const assertReallyMeBuffaPlugins = (bufGen) => {
+    // Require explicit local executables in Buf's block-form plugin list. A
+    // comment or a matching option under a different plugin cannot satisfy it.
+    const lines = readText(bufGen)
+      .split(/\r?\n/u)
+      .map((line) => stripWorkflowInlineComment(line).trimEnd())
+      .filter((line) => line.length !== 0);
+    const pluginHeaders = [...lines.keys()].filter((index) => /^plugins:\s*$/u.test(lines[index]));
+    if (pluginHeaders.length !== 1) {
+      fail(`${bufGen} must declare one top-level plugins block`);
+    }
+    const entries = [];
+    for (const line of lines.slice(pluginHeaders[0] + 1)) {
+      if (!line.startsWith(" ")) {
+        break;
+      }
+      const item = /^ {2}-\s+(.+)$/u.exec(line);
+      if (item !== null) {
+        entries.push([`    ${item[1]}`]);
+      } else if (entries.length !== 0) {
+        entries.at(-1).push(line);
+      }
+    }
+    const localEntries = [];
+    for (const entry of entries) {
+      if (entry.some((line) =>
+        /^ {4}(?:local|remote|protoc_builtin):/u.test(line) &&
+        /(?<![\w-])(?:protoc-gen-buffa(?:-packaging)?|buffa(?:-packaging)?)(?![\w-])/u.test(line),
+      )) {
+        fail(`${bufGen} must use the ReallyMe Buffa plugins for Rust generation`);
+      }
+      const declarations = entry.filter((line) => /^ {4}local:(?:\s|$)/u.test(line));
+      if (declarations.length === 0) {
+        continue;
+      }
+      if (declarations.length !== 1) {
+        fail(`${bufGen} defines local more than once in a plugin entry`);
+      }
+      const command = unquoteWorkflowScalar(declarations[0].slice("    local:".length));
+      localEntries.push({ command, entry });
+    }
+    for (const { executable } of REALLYME_BUFFA_GENERATORS) {
+      const count = localEntries.filter(({ command }) => command === executable).length;
+      if (count !== 1) {
+        fail(`${bufGen} must declare local plugin ${executable} exactly once`);
+      }
+    }
+    const generator = localEntries.find(({ command }) => command === REALLYME_BUFFA_GENERATORS[0].executable);
+    const optionPrefix = "    opt:";
+    const optionHeaders = [...generator.entry.keys()].filter(
+      (index) => generator.entry[index].startsWith(optionPrefix),
+    );
+    if (optionHeaders.length !== 1) {
+      fail(`${bufGen} must declare one opt field for ${generator.command}`);
+    }
+    const optionIndex = optionHeaders[0];
+    const inlineOptions = generator.entry[optionIndex].slice(optionPrefix.length).trim();
+    const options = inlineOptions.length === 0
+      ? parseWorkflowBlockSequence(bufGen, generator.entry, optionIndex, 4, generator.command)
+      : parseWorkflowInlineSequence(bufGen, generator.command, inlineOptions);
+    const configuredOptions = options.flatMap((entry) => entry.split(","))
+      .filter((entry) => entry.trim().length !== 0)
+      .map((entry) => entry.split("=").map((part) => part.trim()));
+    for (const option of ["views", "json"]) {
+      const matches = configuredOptions.filter(([key]) => key === option);
+      if (matches.length !== 1 || matches[0].length !== 2 || matches[0][1] !== "true") {
+        fail(`${bufGen} ${generator.command} must set ${option}=true exactly once`);
+      }
+    }
+    return configuredOptions;
+  };
+
   const assertReallyMeProtobufReleasePolicy = (policy) => {
     const {
       workflow = ".github/workflows/protobuf-ci.yml",
@@ -3762,6 +3849,9 @@ export function createReleaseReadinessContext(options) {
       lintStepName = "Lint protobuf schema",
       generateStepName = "Regenerate protobuf artifacts",
       hardeningPolicy,
+      protoCargo = "crates/proto/Cargo.toml",
+      bufGen = "buf.gen.yaml",
+      protobufFirst,
       generatedFreshnessMode = false,
       generatedFreshness,
       generatedFreshnessStepName = "Check release readiness generated freshness",
@@ -3782,9 +3872,12 @@ export function createReleaseReadinessContext(options) {
     );
 
     assertWorkflowToolVersion(workflow, "BUF_VERSION", bufVersion);
-    assertWorkflowToolVersion(workflow, "BUFFA_VERSION", buffaVersion);
+    const toolchainVersion = assertWorkflowToolVersion(workflow, "BUFFA_VERSION", buffaVersion);
     assertWorkflowChangePathCovered(workflow, releaseReadinessPath);
-    validateGeneratedArtifactsPolicy(generatedFreshness);
+    const { generatedPaths } = validateGeneratedArtifactsPolicy(generatedFreshness);
+    if (protobufFirst !== undefined) {
+      assertProtobufFirstPolicy(protobufFirst, checkerPath);
+    }
 
     if (installBufUses !== null && installBufAction !== null) {
       fail("protobuf release policy must select one install-buf action constraint");
@@ -3801,8 +3894,9 @@ export function createReleaseReadinessContext(options) {
     assertWorkflowRunStep(
       workflow,
       installBuffaStepName,
-      `cargo install protoc-gen-buffa --version "$BUFFA_VERSION" --locked
-cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
+      REALLYME_BUFFA_GENERATORS.map((generator) =>
+        `cargo install ${generator.package} --version "=$BUFFA_VERSION" --locked`,
+      ).join("\n"),
     );
     assertWorkflowRunStep(workflow, generatedFreshnessStepName, generatedFreshnessStepRun);
 
@@ -3825,9 +3919,24 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
       fail(`unsupported protobuf workflow mode ${workflowMode}`);
     }
 
-    assertGeneratedProtoHardeningPolicy(hardeningPolicy);
+    if (hardeningPolicy === null || typeof hardeningPolicy !== "object" || Array.isArray(hardeningPolicy)) {
+      fail("protobuf release policy requires native Buffa hardeningPolicy");
+    }
+    assertReallyMeBuffaRuntime(protoCargo, toolchainVersion);
+    assertGeneratedProtoHardeningPolicy({ ...hardeningPolicy, bufGen, buffaVersion: toolchainVersion });
+    const generatedRust = relative(root, assertRegularFile(hardeningPolicy.generatedRust))
+      .replaceAll("\\", "/");
+    if (!generatedPaths.some((path) => pathIsInside(generatedRust, path))) {
+      fail("native Buffa generatedRust must be inside a declared regeneration directory");
+    }
 
     if (generatedFreshnessMode) {
+      for (const { executable } of REALLYME_BUFFA_GENERATORS) {
+        const result = run(executable, ["--version"], { capture: true });
+        if (result.stdout.trim() !== `${executable} ${toolchainVersion}`) {
+          fail(`${executable} must report version ${toolchainVersion}`);
+        }
+      }
       assertGeneratedArtifactsFresh(generatedFreshness);
     }
   };
@@ -3897,7 +4006,6 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     }
     for (const identifier of [
       "scalarFieldClassifications",
-      "messagePattern",
       "scalarSchemaKeys",
     ]) {
       if (!new RegExp(`\\b${escapeRegExp(identifier)}\\b`, "u").test(executableCore)) {
@@ -4186,10 +4294,17 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
       const eventEnd = eventHeaders[eventIndex + 1]?.index ?? onEnd;
       const filterHeaders = [];
       for (let index = event.index + 1; index < eventEnd; index += 1) {
-        const match = /^ {4}(paths|paths-ignore):\s*(.*?)\s*$/u.exec(lines[index]);
+        const match = /^ {4}(?:([a-z-]+)|"([a-z-]+)"|'([a-z-]+)'):\s*(.*?)\s*$/u.exec(lines[index]);
         if (match !== null) {
-          filterHeaders.push({ index, name: match[1], value: match[2] });
+          filterHeaders.push({ index, name: match[1] ?? match[2] ?? match[3], value: match[4] });
         }
+      }
+      // A push filtered only by tag never runs for a branch change, even if
+      // the event has no path filter. Branch and tag filters may coexist.
+      if (event.name === "push" &&
+          filterHeaders.some(({ name }) => name === "tags" || name === "tags-ignore") &&
+          !filterHeaders.some(({ name }) => name === "branches" || name === "branches-ignore")) {
+        continue;
       }
       const pathFilters = filterHeaders.filter((filter) => filter.name === "paths");
       const ignoreFilters = filterHeaders.filter((filter) => filter.name === "paths-ignore");
@@ -4233,6 +4348,10 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
 
   const extractWorkflowStepsFromLines = (path, lines, start, end, jobName = null) => {
     const steps = [];
+    const firstItem = jobName === null ? undefined : lines.slice(start, end).find(
+      (line) => stripWorkflowInlineComment(line).trim().length !== 0,
+    );
+    const listIndent = firstItem === undefined ? null : countLeadingSpaces(firstItem);
     for (let index = start; index < end; index += 1) {
       const nameMatch = /^(\s*)-\s+name:\s*(.+?)\s*$/u.exec(lines[index]);
       if (nameMatch === null) {
@@ -4240,12 +4359,15 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
       }
 
       const stepIndent = nameMatch[1].length;
+      if (listIndent !== null && stepIndent !== listIndent) {
+        continue;
+      }
       const name = unquoteWorkflowScalar(nameMatch[2]);
-      let end = lines.length;
-      for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+      let stepEnd = end;
+      for (let cursor = index + 1; cursor < end; cursor += 1) {
         const candidate = lines[cursor];
         if (countLeadingSpaces(candidate) === stepIndent && /^\s*-\s+/u.test(candidate)) {
-          end = cursor;
+          stepEnd = cursor;
           break;
         }
       }
@@ -4253,8 +4375,12 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
       let run = null;
       let uses = null;
       let condition = null;
+      let continueOnError = null;
       let workingDirectory = null;
-      for (let cursor = index + 1; cursor < end; cursor += 1) {
+      for (let cursor = index + 1; cursor < stepEnd; cursor += 1) {
+        if (countLeadingSpaces(lines[cursor]) !== stepIndent + 2) {
+          continue;
+        }
         const runMatch = /^(\s*)run:\s*(.*)\s*$/u.exec(lines[cursor]);
         if (runMatch !== null) {
           if (run !== null) {
@@ -4267,7 +4393,7 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
           }
           if (/^[>|][-+]?$/u.test(marker)) {
             const blockLines = [];
-            for (let blockCursor = cursor + 1; blockCursor < end; blockCursor += 1) {
+            for (let blockCursor = cursor + 1; blockCursor < stepEnd; blockCursor += 1) {
               const blockLine = lines[blockCursor];
               if (blockLine.trim().length !== 0 && countLeadingSpaces(blockLine) <= runIndent) {
                 break;
@@ -4301,7 +4427,7 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
           uses = unquoteWorkflowScalar(usesMatch[1]);
         }
 
-        const conditionMatch = /^\s*if:\s*(.+?)\s*$/u.exec(lines[cursor]);
+        const conditionMatch = /^\s*(?:if|"if"|'if'):\s*(.*?)\s*$/u.exec(lines[cursor]);
         if (conditionMatch !== null) {
           if (condition !== null) {
             fail(`${path} step ${name} defines if more than once`);
@@ -4309,7 +4435,15 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
           condition = unquoteWorkflowScalar(conditionMatch[1]);
         }
 
-        const workingDirectoryMatch = /^\s*working-directory:\s*(.+?)\s*$/u.exec(
+        const continueOnErrorMatch = /^\s*(?:continue-on-error|"continue-on-error"|'continue-on-error'):\s*(.*)$/u.exec(lines[cursor]);
+        if (continueOnErrorMatch !== null) {
+          if (continueOnError !== null) {
+            fail(`${path} step ${name} defines continue-on-error more than once`);
+          }
+          continueOnError = unquoteWorkflowScalar(continueOnErrorMatch[1]);
+        }
+
+        const workingDirectoryMatch = /^\s*(?:working-directory|"working-directory"|'working-directory'):\s*(.*?)\s*$/u.exec(
           lines[cursor],
         );
         if (workingDirectoryMatch !== null) {
@@ -4320,7 +4454,7 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
         }
       }
 
-      steps.push({ condition, job: jobName, name, run, uses, workingDirectory });
+      steps.push({ condition, continueOnError, job: jobName, name, run, uses, workingDirectory, index });
     }
     return steps;
   };
@@ -4573,6 +4707,7 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     if (actual !== expected) {
       fail(`${path} step ${stepName} run command changed`);
     }
+    return step;
   };
 
   const assertWorkflowUsesStep = (path, stepName, expectedUses, jobName = null) => {
@@ -4614,8 +4749,9 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
 
   const parseWorkflowJobScalar = (path, job, key) => {
     const matches = [];
+    const property = new RegExp(`^ {4}(?:${key}|"${key}"|'${key}'):\\s*(.*?)\\s*$`, "u");
     for (let index = job.start + 1; index < job.end; index += 1) {
-      const match = new RegExp(`^ {4}${key}:\\s*(.+?)\\s*$`, "u").exec(job.lines[index]);
+      const match = property.exec(job.lines[index]);
       if (match !== null) {
         matches.push(unquoteWorkflowScalar(match[1]));
       }
@@ -4624,6 +4760,305 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
       fail(`${path} job ${job.name} defines ${key} more than once`);
     }
     return matches[0] ?? null;
+  };
+
+  const assertRequiredVerificationStep = (policy, label, paths) => {
+    const { workflow, job, step, run: command, workingDirectory } = policy ?? {};
+    if (![workflow, job, step, command].every(
+      (value) => typeof value === "string" && value.trim().length !== 0,
+    )) {
+      fail(`${label} requires a workflow, job, step, and run command`);
+    }
+    if (workingDirectory !== undefined) {
+      assertRepositoryDirectory(workingDirectory, `${label} working directory`);
+    }
+    requireTracked(workflow);
+    for (const path of paths) {
+      assertWorkflowChangePathCovered(workflow, path);
+    }
+
+    const jobs = extractWorkflowJobs(workflow).filter((candidate) => candidate.name === job);
+    if (jobs.length !== 1) {
+      fail(`${workflow} must define verification job ${job} exactly once`);
+    }
+    const verificationJob = jobs[0];
+    // Resolve the effective directory at the step, job, and workflow levels.
+    // Require explicit policy when CI uses a directory other than the root.
+    const readDefaultDirectory = (lines, start, end, indent) => {
+      const defaultsHeader = new RegExp(`^ {${indent}}(?:defaults|"defaults"|'defaults'):\\s*(.*?)\\s*$`, "u");
+      const runHeader = /^\s*(?:run|"run"|'run'):\s*(.*?)\s*$/u;
+      const directoryKey = /^\s*(?:working-directory|"working-directory"|'working-directory'):\s*(.*?)\s*$/u;
+      let directory = null;
+      for (let index = start; index < end; index += 1) {
+        const defaults = defaultsHeader.exec(lines[index]);
+        if (defaults === null) {
+          continue;
+        }
+        if (unquoteWorkflowScalar(defaults[1]).length !== 0) {
+          fail(`${workflow} verification requires block-form run defaults`);
+        }
+        let inRun = false;
+        for (let cursor = index + 1; cursor < end; cursor += 1) {
+          const line = lines[cursor];
+          if (stripWorkflowInlineComment(line).trim().length === 0) {
+            continue;
+          }
+          const depth = countLeadingSpaces(line);
+          if (depth <= indent) {
+            break;
+          }
+          if (depth === indent + 2) {
+            const run = runHeader.exec(line);
+            inRun = run !== null;
+            if (inRun && unquoteWorkflowScalar(run[1]).length !== 0) {
+              fail(`${workflow} verification requires block-form run defaults`);
+            }
+          } else if (inRun && depth === indent + 4) {
+            const configured = directoryKey.exec(line);
+            if (configured !== null) {
+              if (directory !== null) {
+                fail(`${workflow} defines more than one default working directory`);
+              }
+              directory = unquoteWorkflowScalar(configured[1]);
+            }
+          }
+        }
+      }
+      return directory;
+    };
+    const workflowStep = assertWorkflowRunStep(workflow, step, command, job);
+    const { lines, start, end } = verificationJob;
+    const effectiveDirectory = workflowStep.workingDirectory ??
+      readDefaultDirectory(lines, start + 1, end, 4) ??
+      readDefaultDirectory(lines, 0, lines.length, 0) ?? ".";
+    if (effectiveDirectory !== (workingDirectory ?? ".")) {
+      fail(`${workflow} ${job}/${step} working directory does not match the policy`);
+    }
+    // Each declared lane must expose failures to CI and run for the workflow's
+    // configured change events. These gates are separate from optional test jobs.
+    if (parseWorkflowJobScalar(workflow, verificationJob, "if") !== null || workflowStep.condition !== null) {
+      fail(`${workflow} ${job}/${step} must run without an if condition`);
+    }
+    const jobTolerance = parseWorkflowJobScalar(workflow, verificationJob, "continue-on-error");
+    if ([jobTolerance, workflowStep.continueOnError].some((value) => value !== null && value !== "false")) {
+      fail(`${workflow} ${job}/${step} must fail CI when verification fails`);
+    }
+    return workflowStep;
+  };
+
+  const assertProtobufFirstPolicy = (policy, defaultCheckerPath = "scripts/check_release_readiness.mjs") => {
+    if (policy === null || typeof policy !== "object" || Array.isArray(policy)) {
+      fail("protobuf-first policy must be an object");
+    }
+    const {
+      contractPath = "contracts/README.md",
+      checkerPath = defaultCheckerPath,
+      schemaPaths,
+      verification,
+      sdkConformance,
+    } = policy;
+    const requireTrackedInputs = (paths, label) => {
+      if (!Array.isArray(paths) || paths.length === 0 || new Set(paths).size !== paths.length) {
+        fail(`protobuf-first ${label} must list at least one unique tracked file`);
+      }
+      for (const path of paths) {
+        requireTracked(path);
+        assertRegularFile(path);
+      }
+    };
+
+    requireTrackedInputs([contractPath, checkerPath], "contract and checker");
+    for (const reference of REALLYME_ENGINEERING_REFERENCES) {
+      assertContains(contractPath, `](${reference})`);
+    }
+    requireTrackedInputs(schemaPaths, "schemaPaths");
+    for (const path of schemaPaths) {
+      if (!path.endsWith(".proto")) {
+        fail(`${path} must be a protobuf schema`);
+      }
+      assertProtoContract(path);
+    }
+    const contractInputs = [contractPath, checkerPath, ...schemaPaths];
+    assertRequiredVerificationStep(verification, "protobuf-first verification", contractInputs);
+
+    if (sdkConformance === undefined) {
+      return;
+    }
+    if (sdkConformance === null || typeof sdkConformance !== "object" || Array.isArray(sdkConformance)) {
+      fail("protobuf-first sdkConformance must be an object");
+    }
+    const { sharedFixtures, lanes } = sdkConformance;
+    requireTrackedInputs(sharedFixtures, "sdkConformance.sharedFixtures");
+    if (!Array.isArray(lanes) || lanes.length === 0) {
+      fail("protobuf-first sdkConformance must declare at least one SDK lane");
+    }
+    const sdkNames = new Set();
+    const steps = new Set();
+    for (const lane of lanes) {
+      const { sdk, workflow, job, step } = lane ?? {};
+      if (typeof sdk !== "string" || !/^[a-z][a-z0-9-]*$/u.test(sdk) || sdkNames.has(sdk)) {
+        fail("protobuf-first SDK lanes must have distinct lowercase SDK identifiers");
+      }
+      sdkNames.add(sdk);
+      assertRequiredVerificationStep(lane, `protobuf-first SDK lane ${sdk}`, [...contractInputs, ...sharedFixtures]);
+      const location = JSON.stringify([workflow, job, step]);
+      if (steps.has(location)) {
+        fail("protobuf-first SDK lanes must use distinct workflow steps");
+      }
+      steps.add(location);
+    }
+  };
+
+  const assertRustReleasePolicy = (policy, defaultCheckerPath = "scripts/check_release_readiness.mjs") => {
+    if (policy === null || typeof policy !== "object" || Array.isArray(policy)) {
+      fail("Rust release policy must be an object");
+    }
+    const {
+      checkerPath = defaultCheckerPath,
+      release,
+      artifacts = [],
+      msrv = [],
+      dependencyReview,
+    } = policy;
+    const requireInput = (path) => {
+      requireTracked(path);
+      assertRegularFile(path);
+    };
+    const normalizeRustVersion = (version) => {
+      if (typeof version !== "string" || !/^1\.(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*))?$/u.test(version)) {
+        return null;
+      }
+      return version.split(".").length === 2 ? `${version}.0` : version;
+    };
+    const manifestPath = "Cargo.toml";
+    const lockPath = "Cargo.lock";
+    const toolchainPath = "rust-toolchain.toml";
+    const commonInputs = [checkerPath, manifestPath, lockPath, toolchainPath];
+    for (const path of commonInputs) {
+      requireInput(path);
+    }
+    assertPathsAbsent(["rust-toolchain"]);
+    const toolchainLines = scrubHashCommentsPreservingStrings(readText(toolchainPath))
+      .split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
+    const toolchainStart = toolchainLines.indexOf("[toolchain]");
+    const toolchainEnd = toolchainLines.findIndex((line, index) =>
+      index > toolchainStart && line.startsWith("["),
+    );
+    const settings = toolchainStart < 0 ? [] : toolchainLines.slice(
+      toolchainStart + 1, toolchainEnd < 0 ? undefined : toolchainEnd,
+    );
+    const channels = settings.filter((line) => /^(?:channel|"channel"|'channel')\s*=/u.test(line));
+    const expectedChannel = new RegExp(`^channel\\s*=\\s*(["'])${escapeRegExpLiteral(RUST_RELEASE_TOOLCHAIN)}\\1$`, "u");
+    if (channels.length !== 1 || !expectedChannel.test(channels[0]) ||
+        settings.some((line) => /^(?:path|"path"|'path')\s*=/u.test(line))) {
+      fail(`${toolchainPath} must select Rust ${RUST_RELEASE_TOOLCHAIN} in [toolchain]`);
+    }
+
+    const metadata = readCargoMetadata([
+      `+${RUST_RELEASE_TOOLCHAIN}`, "metadata", "--format-version", "1", "--no-deps", "--locked", "--offline",
+    ]);
+    if (!Array.isArray(metadata?.packages) || !Array.isArray(metadata?.workspace_members)) {
+      fail("Rust release policy requires Cargo workspace metadata");
+    }
+    const members = new Set(metadata.workspace_members);
+    const workspacePackages = metadata.packages.filter((cargoPackage) => members.has(cargoPackage?.id));
+    assertNoUpstreamBuffaDependencies(workspacePackages);
+    for (const entry of readText(lockPath).split(/^\[\[package\]\]\s*$/mu).slice(1)) {
+      const dependency = /^name\s*=\s*"([A-Za-z0-9_-]+)"\s*$/mu.exec(entry)?.[1];
+      if (dependency !== undefined && isUpstreamBuffaPackage(dependency)) {
+        fail(`${lockPath} resolves upstream ${dependency}; use its ReallyMe Buffa counterpart`);
+      }
+    }
+    const packageVersions = new Map();
+    const workspaceManifests = new Set();
+    for (const cargoPackage of workspacePackages) {
+      if (typeof cargoPackage.manifest_path !== "string" ||
+          typeof cargoPackage.name !== "string" || !/^[A-Za-z0-9_-]+$/u.test(cargoPackage.name) ||
+          (cargoPackage.publish !== null && !Array.isArray(cargoPackage.publish))) {
+        fail("Rust release policy received malformed Cargo package metadata");
+      }
+      const path = relative(root, cargoPackage.manifest_path).replaceAll("\\", "/");
+      requireInput(path);
+      workspaceManifests.add(path);
+      if (cargoPackage.publish?.length === 0) {
+        continue;
+      }
+      const version = normalizeRustVersion(cargoPackage.rust_version);
+      if (version === null) {
+        fail(`publishable crate ${cargoPackage.name} must declare rust-version`);
+      }
+      packageVersions.set(cargoPackage.name, version);
+    }
+    // Cargo metadata with --no-deps can read an outdated lockfile. Full
+    // resolution in the required CI commands enforces --locked on that graph.
+    if (members.size === 0 || workspaceManifests.size !== members.size) {
+      fail("Rust release policy requires metadata for every workspace member");
+    }
+    const workspaceInputs = [...new Set([...commonInputs, ...workspaceManifests])];
+    const assertCargoTest = (lane, label, version, target, inputs) => {
+      const args = [`+${version}`, "test", "--locked", ...target, "--all-features"];
+      assertRequiredVerificationStep({ ...lane, run: ["cargo", ...args].join(" ") }, label, inputs);
+    };
+    assertCargoTest(
+      release, "Rust release verification", RUST_RELEASE_TOOLCHAIN, ["--workspace"], workspaceInputs,
+    );
+    if (!Array.isArray(artifacts)) {
+      fail("Rust release policy artifacts must be an array of release build steps");
+    }
+    for (const lane of artifacts) {
+      const { workflow, job, step, run: command, workingDirectory } = lane ?? {};
+      const tokens = typeof command === "string" ? command.split(" ") : [];
+      if (typeof command !== "string" ||
+          !/^[A-Za-z0-9 _./=,+@:-]+$/u.test(command) ||
+          tokens[0] !== "cargo" || tokens[1] !== `+${RUST_RELEASE_TOOLCHAIN}` ||
+          !["build", "package", "publish"].includes(tokens[2]) ||
+          tokens.includes("--") || tokens.includes("--no-verify") || !tokens.includes("--locked")) {
+        fail(`Rust artifact steps must use cargo +${RUST_RELEASE_TOOLCHAIN} build, package, or publish with --locked`);
+      }
+      if (typeof workflow !== "string" || typeof job !== "string" || typeof step !== "string") {
+        fail("Rust artifact steps require a workflow, job, and step");
+      }
+      requireInput(workflow);
+      if (workingDirectory !== undefined) {
+        assertRepositoryDirectory(workingDirectory, "Rust artifact working directory");
+      }
+      assertWorkflowRunStep(workflow, step, command, job, workingDirectory ?? null);
+    }
+    if (!Array.isArray(msrv)) {
+      fail("Rust release policy msrv must be an array of crate verification steps");
+    }
+    const verifiedCrates = new Set();
+    for (const lane of msrv) {
+      const name = lane?.package;
+      if (!packageVersions.has(name) || verifiedCrates.has(name)) {
+        fail("Rust MSRV steps must name distinct publishable workspace crates");
+      }
+      assertCargoTest(lane, `MSRV verification for ${name}`, packageVersions.get(name), ["--package", name], workspaceInputs);
+      verifiedCrates.add(name);
+    }
+    for (const name of packageVersions.keys()) {
+      if (!verifiedCrates.has(name)) {
+        fail(`publishable crate ${name} is missing a CI test at its declared MSRV ${packageVersions.get(name)}`);
+      }
+    }
+
+    const { workflow, job, installStep = "Install cargo-deny" } = dependencyReview ?? {};
+    const denyConfig = "deny.toml";
+    requireInput(denyConfig);
+    const audit = assertRequiredVerificationStep({
+      ...dependencyReview,
+      run: `cargo +${RUST_RELEASE_TOOLCHAIN} deny --locked --workspace --all-features --config ${denyConfig} check advisories licenses sources`,
+    }, "Rust dependency review", [...workspaceInputs, denyConfig]);
+    const install = assertRequiredVerificationStep({
+      workflow,
+      job,
+      step: installStep,
+      run: `cargo +${RUST_RELEASE_TOOLCHAIN} install cargo-deny --version '=${CARGO_DENY_VERSION}' --locked`,
+    }, "Cargo Deny installation", []);
+    if (install.index >= audit.index) {
+      fail(`${workflow} ${job} must install Cargo Deny before dependency review`);
+    }
+    reportPolicy("rust-release");
   };
 
   const parseWorkflowNeeds = (path, job) => {
@@ -5000,6 +5435,7 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
       nodeWorkflows = {},
       cargoFuzz,
       cargoWorkspace = {},
+      rustRelease,
       repositoryShape,
       rustSource,
       typescriptSource,
@@ -5029,6 +5465,7 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
       ["nodeWorkflows", nodeWorkflows],
       ["cargoFuzz", cargoFuzz],
       ["cargoWorkspace", cargoWorkspace],
+      ["rustRelease", rustRelease],
       ["spdx", spdx],
       ["protobufBoundary", protobufBoundary],
       ["protobufRelease", protobufRelease],
@@ -5119,6 +5556,9 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     assertNodeWorkflowJobsPinNode(nodeWorkflows);
     assertCargoFuzzWorkflowPolicy(cargoFuzz);
     assertCargoWorkspacePolicy(cargoWorkspace);
+    if (rustRelease !== undefined) {
+      assertRustReleasePolicy(rustRelease, (releasePackage ?? selectedVendoredCore)?.scriptPath);
+    }
     if (repositoryShape !== undefined) {
       assertRepositoryShapePolicy(repositoryShape);
     }
@@ -5142,6 +5582,8 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     assertPathsAbsent(retiredPaths);
     assertReallyMeProtobufReleasePolicy({
       ...protobufRelease,
+      protoCargo: protobufBoundary.protoCargo,
+      bufGen: protobufBoundary.bufGen,
       generatedFreshnessMode,
     });
     if (cargoMetadata !== undefined) {
@@ -5429,11 +5871,7 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
       protoReadme,
       "JSON is a generated ProtoJSON request convenience. Results remain one fully",
     );
-    assertContains(bufGen, "local: protoc-gen-buffa");
-    assertContains(bufGen, "views=true");
-    assertContains(bufGen, "json=true");
-    assertContains(protoCargo, '"buffa/json"');
-    assertContains(protoCargo, "zeroize");
+    assertReallyMeBuffaPlugins(bufGen);
     assertContains(wirePath, operationRequest);
     assertContains(wirePath, operationResponse);
     assertContains(wirePath, "Zeroizing<Vec<u8>>");
@@ -5781,6 +6219,7 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     assertCargoMetadataDocument,
     assertCargoMetadataPolicy,
     assertCargoWorkspacePolicy,
+    assertRustReleasePolicy,
     assertRepositoryShapePolicy,
     assertRustSourcePolicy,
     assertTypeScriptSourcePolicy,
@@ -5805,6 +6244,7 @@ cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked`,
     assertWorkflowUsesStep,
     assertWorkflowUsesStepPinnedTo,
     assertWorkflowPolicy,
+    assertProtobufFirstPolicy,
     stripProtoLineComments,
     extractProtoBlocks,
     assertProtoContract,

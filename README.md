@@ -52,15 +52,16 @@ policy fixes from remaining trapped in stale local copies.
   third-party exclusions that can be required to match current tracked files.
 - Protobuf schema contracts, generated output freshness, and adapter boundary
   checks.
+- Opt-in protobuf-first verification for any repository archetype, including
+  shared conformance fixtures and native CI checks for repositories with SDKs.
 - Granular provider contracts with exact descriptor/request/result/error/response
   surfaces, unique operation parity, correlation, typed outcomes,
   service-separation, codec, runtime, and adapter checks.
 - Explicit retired-path enforcement so deprecated examples, trackers, and
   compatibility surfaces cannot remain present or tracked unnoticed.
-- Generated protobuf hardening checks for redacted Debug output, strict
-  ProtoJSON, zeroizing temporary byte owners, recursive unknown-field wiping,
-  final-owner zeroization, and closed-world sensitivity classification for
-  every `bytes` and `string` schema field.
+- Generated protobuf hardening checks for native Buffa guarded owners,
+  redacted Debug, zeroization, strict ProtoJSON, borrowed-only views, and explicit
+  sensitivity classification for every `bytes` and `string` schema field.
 - Command matrices for repository-specific release suites.
 
 The package and Git release share one semantic version. Consumer checkers load
@@ -70,7 +71,7 @@ current marker is:
 ```js
 assertContains(
   "core.mjs",
-  'RELEASE_READINESS_VERSION = "0.7.0"',
+  'RELEASE_READINESS_VERSION = "0.8.0"',
 );
 ```
 
@@ -102,14 +103,14 @@ Other exact requirements are intentional toolchain and release contracts:
 | Requirement | Declaration | Update path |
 | --- | --- | --- |
 | Buf CLI | Exact workflow `BUF_VERSION` | Update the workflow value; a consumer may separately opt into an exact policy override |
-| Buffa generators | Exact workflow `BUFFA_VERSION` | Update the workflow value; a consumer may separately opt into an exact policy override |
+| ReallyMe Buffa runtime and generators | Exact workflow `BUFFA_VERSION` and matching Cargo requirement for `reallyme-buffa` | Update the workflow, Cargo requirement, lockfile where used, and generated output together |
 | cargo-fuzz template | Exact workflow `CARGO_FUZZ_VERSION` | Update the workflow value; both install lanes use that variable |
 | Node runtime | 26 in this repository and template; consumer minimum and package engine `>=26` | Review a runtime-major migration in this repository's workflow, checker, template, and package engine |
-| Release-readiness package | 0.7.0 | Publish a new package revision and update consumer pins |
+| Release-readiness package | 0.8.0 | Publish a new package revision and update consumer pins |
 
 Dependabot does not update version literals embedded in checker source. The
-shared core therefore validates Buf, Buffa, and template cargo-fuzz versions
-declared in workflow environment values without duplicating their numbers.
+shared core validates Buf, the ReallyMe Buffa toolchain, and template cargo-fuzz
+against the workflow environment without repeating those versions in the checker.
 Keep action SHAs in workflow files and match action repositories in checker
 policy with `assertWorkflowUsesStepPinnedTo` or `installBufAction`.
 Declarative `usesSteps` policies can use `{ name, action: "owner/repository" }`
@@ -160,10 +161,18 @@ source and requires the consumer checker to invoke the corresponding shared
 source policy. A repository cannot bypass the source rules by omitting a policy
 call.
 
+For a repository with a tracked root `Cargo.toml`, the runner also requires
+the [Rust release policy](docs/rust-release.md). It pins development and release
+to Rust 1.100.0 and checks that CI tests each publishable crate at its declared
+MSRV and audits the locked dependency graph. Use Rust 1.96 as the recommended
+MSRV for new public crates.
+
 For a new Rust/protobuf repository, start from
 [`templates/check_release_readiness.mjs`](templates/check_release_readiness.mjs)
 and the companion [`templates/README.md`](templates/README.md). The template
 fails closed until every `REPLACE_*` marker has been replaced.
+For a Rust library without a protobuf boundary, use the
+[`foundational-library` example](docs/repository-shapes.md#foundational-library).
 
 The protobuf release policy defaults to the explicit-checkout invocation at
 `.release-readiness/scripts/run-consumer-check.mjs`. Consumers using the npm
@@ -180,13 +189,10 @@ Use the public [archetype matrix](docs/archetype-matrix.md) to select a
 repository responsibility, then apply the exact lane and ownership rules in
 [the repository-shape contract](docs/repository-shapes.md).
 
-Generated protobuf freshness checks should snapshot generated outputs, run
-`buf lint`, `buf generate`, the repository hardening script such as
-`harden-generated-example-proto.mjs`, and `cargo fmt`, then compare the updated
-generated tree plus every tracked or non-ignored file outside the declared generated directories.
-Hardening scripts must also support `--check-idempotent`; repository checkers
-run that mode against checked-in output so a second pass cannot accumulate
-comments, derives, debug implementations, or drop implementations.
+Generated protobuf freshness checks run `buf lint`, `buf generate`, and
+formatting, then compare the outputs and every tracked or non-ignored file
+outside the declared generated directories. The ReallyMe Buffa generator
+applies Rust hardening during generation.
 
 For authored Rust, configure `assertRustSourcePolicy` (or the aggregate
 `rustSource` policy) with the source roots and generated-source exclusions. Use
@@ -275,7 +281,16 @@ corresponding license files. Legacy consumers pinned to an earlier vendored-core
 release must preserve that core's original header and third-party notice while
 they migrate; new consumers must use the centrally versioned runner.
 
+The shared [Cargo dependency license baseline](templates/deny.toml) is available
+to Rust repositories of any archetype. See the [Cargo Deny setup](templates/README.md#cargo-dependency-licenses)
+for applying the baseline to a repository's locked release graph.
+
 ## Protobuf Notes
+
+Use [`assertProtobufFirstPolicy`](docs/protobuf-first.md) to declare a
+protobuf-first boundary, its tracked contract and CI verification, and any
+SDK conformance lanes. The guide covers shared operation errors, SDK-specific
+provider failures, and generated types and codecs at the wire boundary.
 
 Protobuf identifiers are ReallyMe wire identifiers, not provider registry
 values. `assertProtoContract` requires neither sparse nor sequential numbering;
@@ -287,9 +302,16 @@ Every protobuf `bytes` and `string` field must appear exactly once in
 `sensitivity: "public"` explicitly and include its schema kind and owning
 message. The checker rejects unclassified schema additions, duplicate entries,
 kind mismatches, and stale classifications. Sensitive entries additionally
-require message-scoped Debug redaction, generated-path and final-owner wiping,
-and a zeroizing ProtoJSON staging owner. Nested messages fail closed until the
-classifier is explicitly extended to represent their ownership path.
+require Buffa's custom guarded field types with ProtoJSON policies, message
+zeroization and Debug redaction, borrowed-only views, strict JSON decoding,
+and disabled binary unknown-field storage. Nested messages, groups, extensions,
+and maps with string or bytes slots require an extended classifier.
+
+When upgrading a protobuf consumer from `0.7.0`, move Rust hardening settings
+into `buf.gen.yaml`, remove the generated Rust rewrite and idempotence commands,
+and regenerate with matching ReallyMe runtime and plugin versions. Update the
+consumer pin and [checker template](templates/README.md#reallyme-buffa-toolchain)
+together. Rust consumers also need the [Rust release policy](docs/rust-release.md).
 
 The executable adapter boundary is intentionally narrow: the proto crate owns
 messages only, exposes no protobuf service, accepts binary protobuf and

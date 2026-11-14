@@ -1,7 +1,36 @@
 # Local Release Checker Template
 
+## Cargo dependency licenses
+
+[`deny.toml`](deny.toml) contains the shared dependency license baseline for
+Rust consumers of any archetype. Copy the `[licenses].allow` list into a new
+Cargo Deny config, or use the licenses needed by the repository from that list
+in its existing config. Keep any crate-specific exceptions scoped to the
+reviewed dependency and version. The baseline applies to dependencies.
+Repository licensing and authored SPDX headers follow the repository's own
+license policy.
+
+Run Cargo Deny against the locked release graph with the features and targets
+the repository ships. For a workspace whose release checks cover all features:
+
+```sh
+cargo deny --locked --all-features check licenses
+```
+
+Carry applicable upstream notices into the distributed artifacts. Blue Oak
+allows the license text or a link to it. Unicode v3 requires its copyright and
+permission notice with copies or in associated documentation.
+[Cargo Deny license configuration](https://embarkstudios.github.io/cargo-deny/checks/licenses/cfg.html) ·
+[Blue Oak Model License](https://blueoakcouncil.org/license/1.0.0) ·
+[Unicode License v3](https://www.unicode.org/license.txt)
+
+## Rust protobuf checker
+
 Use this template for a ReallyMe Rust repository that owns an executable
 protobuf/ProtoJSON adapter lane.
+
+Configure `rustRelease` using the [Rust toolchain and dependency review guide](../docs/rust-release.md).
+The same policy applies to Rust repositories without protobuf or public crates.
 
 Install the checker from the reviewed central revision:
 
@@ -48,17 +77,59 @@ The template enables the following mandatory baseline through
   envelope;
 - every declared SDK adapter exposes both generic protobuf and generated
   ProtoJSON entrypoints and references the binary result envelope;
-- generated sensitive fields have redacted Debug, zeroizing JSON temporaries,
-  final-owner zeroization, recursive unknown-field wiping, and strict unknown
-  JSON rejection;
+- native Buffa generation uses guarded owners, redacts Debug, wipes sensitive
+  messages, uses borrowed-only views, rejects unknown ProtoJSON keys, and
+  discards binary unknown fields in sensitive messages;
 - protobuf regeneration cannot modify files outside declared generated paths;
-- protobuf CI owns the pinned `buf`/Buffa toolchain and invokes generated
+- protobuf CI pins Buf and the ReallyMe Buffa toolchain and invokes generated
   freshness exactly once.
 
+### ReallyMe Buffa toolchain
+
 The shared core validates exact `BUF_VERSION` and `BUFFA_VERSION` values in
-the protobuf workflow's top-level `env`. Updating either tool only requires a
-reviewed workflow change unless a consumer explicitly configures a matching
-`bufVersion` or `buffaVersion` policy override.
+the protobuf workflow's top-level `env`. Declare `reallyme-buffa` as the
+protobuf crate's `buffa` runtime dependency and pin it to the same exact
+registry version. For the 0.1.2 toolchain, use:
+
+```toml
+[dependencies]
+buffa = { package = "reallyme-buffa", version = "=0.1.2", features = ["json", "zeroize"] }
+```
+
+The crate may inherit the same dependency through `[workspace.dependencies]`.
+Use both exact installs in the workflow's `Install pinned Buffa generators`
+step:
+
+```sh
+cargo install reallyme-protoc-gen-buffa --version "=$BUFFA_VERSION" --locked
+cargo install reallyme-protoc-gen-buffa-packaging --version "=$BUFFA_VERSION" --locked
+```
+
+Use `local: protoc-gen-reallyme-buffa` and
+`local: protoc-gen-reallyme-buffa-packaging` as direct executable entries in a
+block-form `plugins` list. Set `views=true` and `json=true` on the message
+generator. The Rust dependency must expose the `json` and `zeroize` features
+directly or through the protobuf crate's feature declarations. Generated freshness
+checks both executables' reported versions before running Buf. Update
+`BUFFA_VERSION`, the Cargo requirement, the lockfile where used, and generated
+output together. A consumer may also pin `bufVersion` or `buffaVersion` in its
+policy.
+
+For messages containing classified sensitive fields, enable `zeroize=true`
+or a matching `zeroize_in` selector. Set `unknown_fields=false`, enable
+`deny_unknown_json_fields=true` or `deny_unknown_json_fields_in`, and select
+the messages with `borrowed_views_only_in`. Configure
+`bytes_type_custom_in` and `string_type_custom_in` as needed, and register
+each selected Rust owner using `json_policy_type`. Buffa makes the generated
+Rust require the owner's zeroization traits and uses the owner's ProtoJSON
+implementation. Test and audit the implementations in the consumer crate.
+Use the native output in `hardeningPolicy.generatedRust` and include its
+directory in the freshness check. Remove legacy Rust hardening settings and
+the associated rewrite and idempotence commands from the checker and CI.
+
+The Rust release policy rejects upstream Buffa package identities in workspace
+dependencies and the locked graph. Keep the local `buffa` Cargo alias for
+the ReallyMe runtime because generated Rust references `::buffa`.
 
 Keep component-specific algorithm, vector, provider, package, and documentation
 invariants below the marked boundary at the end of the local script. When a
@@ -71,6 +142,12 @@ still pin the action to a full commit SHA. Configure the consumer repository's
 `.github/dependabot.yml` with the `github-actions` ecosystem if automated
 update pull requests are wanted. Dependabot updates workflow references, not
 SHA literals copied into checker source.
+
+Enable `protobufRelease.protobufFirst` to validate the tracked architecture
+references, owned schemas, and exact CI verification commands. Declare
+`sdkConformance` when the repository ships SDKs. For repositories without SDKs
+or with a different protobuf layout, see the standalone policy and the
+[protobuf-first contract and CI examples](../docs/protobuf-first.md).
 
 Prefer action-named implementation files such as `create.rs`, `evaluate.ts`,
 `sign.swift`, and `verify.kt`. Treat this as a human-review convention rather
@@ -90,6 +167,11 @@ lifecycle form one product release unit. A facade is optional in every case and
 is declared with the `facade` crate role. These classifications are
 language-neutral: applications and collection members may use Rust,
 TypeScript, or both.
+
+For a foundational library without a protobuf boundary, start with the
+[`foundational-library` checker example](../docs/repository-shapes.md#foundational-library).
+Its `contracts/README.md` records the consumer surface, compatibility promises,
+and verification evidence.
 
 If a repository chooses a target below an applicable hard ceiling, it may set
 `baselinePath` to a tracked TSV for existing files between the two limits. Each

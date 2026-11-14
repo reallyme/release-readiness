@@ -53,7 +53,7 @@ test("runner supplies its immutable package core to the consumer", () => {
     `const coreUrl = process.env.RELEASE_READINESS_CORE_URL;
 if (typeof coreUrl !== "string") process.exit(2);
 const { RELEASE_READINESS_VERSION } = await import(coreUrl);
-if (RELEASE_READINESS_VERSION !== "0.7.0") process.exit(3);
+if (RELEASE_READINESS_VERSION !== "0.8.0") process.exit(3);
 `,
   );
   const result = runConsumer(root);
@@ -108,6 +108,17 @@ context.assertRustSourcePolicy();
 
   const result = runConsumer(root);
   assert.equal(result.status, 0, result.stderr);
+});
+
+test("runner requires Rust release policy for a repository with a tracked root Cargo manifest", () => {
+  const root = createConsumer();
+  writeFileSync(join(root, "Cargo.toml"), "[workspace]\nmembers = []\n");
+  const gitAdd = spawnSync("git", ["add", "Cargo.toml"], { cwd: root, encoding: "utf8" });
+  assert.equal(gitAdd.status, 0, gitAdd.stderr);
+
+  const result = runConsumer(root);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /did not enforce the shared Rust release policy/u);
 });
 
 test("runner-bound core remains external inside the consumer checkout", () => {

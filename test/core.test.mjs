@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
@@ -497,7 +497,7 @@ const platformWorkspaceShapePolicy = {
   requireReleaseReadiness: true,
 };
 
-const runFixtureScript = (root, body) =>
+const runFixtureScript = (root, body, env = process.env) =>
   spawnSync(
     process.execPath,
     [
@@ -510,7 +510,7 @@ const context = createReleaseReadinessContext({
 });
 ${body}`,
     ],
-    { encoding: "utf8" },
+    { encoding: "utf8", env },
   );
 
 const runTrackedFixtureScript = (root, body) => {
@@ -1342,6 +1342,309 @@ jobs:
   assert.match(result.stderr, /defines workflow step Run check more than once/u);
 });
 
+const engineeringLinks = `
+[Engineering Philosophy](https://github.com/reallyme/.github/blob/main/ENGINEERING_PHILOSOPHY.md)
+[Architecture Standards](https://github.com/reallyme/.github/blob/main/ARCHITECTURE.md)
+`;
+
+const createProtobufFirstFixture = () => {
+  const root = createTrackedFixture();
+  const policy = {
+    schemaPaths: ["app/contract/proto/operation.proto"],
+    verification: {
+      workflow: ".github/workflows/proto.yml",
+      job: "schema",
+      step: "Check protobuf contract",
+      run: "./scripts/check-schema.sh",
+    },
+  };
+  const sdkConformance = {
+    sharedFixtures: ["conformance/operations.json"],
+    lanes: [
+      { sdk: "swift", workflow: ".github/workflows/sdk.yml", job: "swift", step: "Verify wire", run: "./scripts/check-swift-wire.sh" },
+      { sdk: "typescript-wasm", workflow: ".github/workflows/sdk.yml", job: "wasm", step: "Verify wire", run: "npm run check:wire", workingDirectory: "sdk/ts" },
+      { sdk: "kotlin-jni", workflow: ".github/workflows/sdk.yml", job: "jni", step: "Verify wire", run: "./gradlew checkWire" },
+    ],
+  };
+  const sdkWorkflow = `on: [push, pull_request]
+jobs:
+  swift:
+    runs-on: macos-latest
+    steps:
+      - name: Verify wire
+        run: ./scripts/check-swift-wire.sh
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify wire
+        working-directory: sdk/ts
+        run: npm run check:wire
+  jni:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify wire
+        run: ./gradlew checkWire
+`;
+  const protoWorkflow = `on:
+  pull_request:
+    paths:
+      - contracts/README.md
+      - scripts/check_release_readiness.mjs
+      - app/contract/proto/operation.proto
+jobs:
+  schema:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check protobuf contract
+        run: ./scripts/check-schema.sh
+`;
+  for (const directory of ["app/contract/proto", "conformance", "contracts", "sdk/ts"]) {
+    mkdirSync(join(root, directory), { recursive: true });
+  }
+  const schema = 'syntax = "proto3";\nmessage Request {\n  uint32 sequence = 1;\n}\n';
+  writeFileSync(join(root, policy.schemaPaths[0]), schema);
+  writeFileSync(join(root, "contracts/README.md"), engineeringLinks);
+  writeFileSync(join(root, "scripts/check_release_readiness.mjs"), "export {};\n");
+  writeFileSync(join(root, sdkConformance.sharedFixtures[0]), "[]\n");
+  writeFileSync(join(root, "sdk/ts/package.json"), "{}\n");
+  writeFileSync(join(root, policy.verification.workflow), protoWorkflow);
+  writeFileSync(join(root, sdkConformance.lanes[0].workflow), sdkWorkflow);
+  const result = spawnSync("git", ["add", "."], { cwd: root, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  const check = (configured) => runTrackedFixtureScript(
+    root, `context.assertProtobufFirstPolicy(${JSON.stringify(configured)});`,
+  );
+  return { root, policy, sdkConformance, check, schema, protoWorkflow, sdkWorkflow };
+};
+
+test("protobuf-first verification works independently of repository archetype or SDKs", () => {
+  const { root, policy, check, schema, protoWorkflow } = createProtobufFirstFixture();
+  const passed = check(policy);
+  assert.equal(passed.status, 0, passed.stderr);
+
+  for (const [path, content, diagnostic] of [
+    ["contracts/README.md", `<!--${engineeringLinks}-->`, /does not contain.*ENGINEERING_PHILOSOPHY/u],
+    ["contracts/README.md", engineeringLinks.replace("/main/ARCHITECTURE.md", "/HEAD/ARCHITECTURE.md"), /does not contain.*ARCHITECTURE/u],
+    ["contracts/README.md", engineeringLinks.replace("/main/ENGINEERING_PHILOSOPHY.md", "/HEAD/ENGINEERING_PHILOSOPHY.md"), /does not contain.*ENGINEERING_PHILOSOPHY/u],
+    [policy.schemaPaths[0], schema.replace("sequence = 1;", "sequence = 1;\n  uint32 duplicate = 1;"), /reuses field number 1/u],
+    [policy.verification.workflow, protoWorkflow.replace("      - app/contract/proto/operation.proto\n", ""), /does not cover changes to app\/contract/u],
+    [policy.verification.workflow, protoWorkflow.replace(/on:[\s\S]+?(?=jobs:)/u, "on:\n  push:\n    'tags': ['v*']\n"), /does not cover changes/u],
+    [policy.verification.workflow, protoWorkflow.replace("run: ./scripts/check-schema.sh", "run: ./scripts/other.sh"), /run command changed/u],
+  ]) {
+    const absolute = join(root, path);
+    const original = readFileSync(absolute, "utf8");
+    writeFileSync(absolute, content);
+    const failed = check(policy);
+    assert.equal(failed.status, 1);
+    assert.match(failed.stderr, diagnostic);
+    writeFileSync(absolute, original);
+  }
+
+  const wrongSchema = check({ ...policy, schemaPaths: ["contracts/README.md"] });
+  assert.equal(wrongSchema.status, 1);
+  assert.match(wrongSchema.stderr, /must be a protobuf schema/u);
+  writeFileSync(join(root, "architecture.md"), engineeringLinks);
+  const untracked = check({ ...policy, contractPath: "architecture.md" });
+  assert.equal(untracked.status, 1);
+  assert.match(untracked.stderr, /architecture\.md is not tracked/u);
+});
+
+const createRustReleaseFixture = () => {
+  const root = createTrackedFixture();
+  const policy = {
+    release: { workflow: ".github/workflows/rust.yml", job: "release", step: "Test release" },
+    artifacts: [{ workflow: ".github/workflows/rust.yml", job: "publish", step: "Publish first crate", run: "cargo +1.100.0 publish --locked --package public-first" }],
+    msrv: [
+      { package: "public-first", workflow: ".github/workflows/rust.yml", job: "msrv", step: "Test first crate" },
+      { package: "public-second", workflow: ".github/workflows/rust.yml", job: "msrv", step: "Test second crate" },
+    ],
+    dependencyReview: { workflow: ".github/workflows/rust.yml", job: "audit", step: "Check locked dependencies" },
+  };
+  const toolchain = '[toolchain]\nchannel = "1.100.0" # exact stable\n';
+  const manifest = `[workspace]
+members = ["first", "second", "private"]
+resolver = "3"
+
+[workspace.package]
+rust-version = "1.96"
+`;
+  const workflow = `on: [push, pull_request]
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test release
+        run: cargo +1.100.0 test --locked --workspace --all-features
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish first crate
+        run: cargo +1.100.0 publish --locked --package public-first
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test first crate
+        run: cargo +1.96.0 test --locked --package public-first --all-features
+      - name: Test second crate
+        run: cargo +1.99.1 test --locked --package public-second --all-features
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install cargo-deny
+        run: cargo +1.100.0 install cargo-deny --version '=0.20.2' --locked
+      - name: Check locked dependencies
+        run: cargo +1.100.0 deny --locked --workspace --all-features --config deny.toml check advisories licenses sources
+`;
+  for (const [directory, name, settings] of [
+    ["first", "public-first", "rust-version.workspace = true"],
+    ["second", "public-second", 'rust-version = "1.99.1"\npublish = ["crates-io"]'],
+    ["private", "private-fixture", "publish = false"],
+  ]) {
+    mkdirSync(join(root, directory, "src"), { recursive: true });
+    writeFileSync(join(root, directory, "src/lib.rs"), "");
+    writeFileSync(join(root, directory, "Cargo.toml"), `[package]\nname = "${name}"\nversion = "0.1.0"\nedition = "2021"\n${settings}\n`);
+  }
+  writeFileSync(join(root, "Cargo.toml"), manifest);
+  writeFileSync(join(root, "rust-toolchain.toml"), toolchain);
+  writeFileSync(join(root, "deny.toml"), '[licenses]\nallow = ["MIT"]\n');
+  writeFileSync(join(root, "scripts/check_release_readiness.mjs"), "export {};\n");
+  writeFileSync(join(root, policy.release.workflow), workflow);
+  const lock = spawnSync("cargo", ["generate-lockfile", "--offline"], { cwd: root, encoding: "utf8" });
+  assert.equal(lock.status, 0, lock.stderr);
+  const stage = spawnSync("git", ["add", "."], { cwd: root, encoding: "utf8" });
+  assert.equal(stage.status, 0, stage.stderr);
+  const check = (configured = policy) => runTrackedFixtureScript(
+    root, `context.assertRustReleasePolicy(${JSON.stringify(configured)});`,
+  );
+  return { root, policy, check, toolchain, workflow };
+};
+
+test("Rust release policy verifies every publishable crate at its exact declared MSRV", (t) => {
+  const { root, policy, check, toolchain, workflow } = createRustReleaseFixture();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const passed = check();
+  assert.equal(passed.status, 0, passed.stderr);
+
+  const lockPath = join(root, "Cargo.lock");
+  const lock = readFileSync(lockPath, "utf8");
+  writeFileSync(lockPath, `${lock}\n[[package]]\nname = "buffa-types"\nversion = "0.9.2"\n`);
+  const upstreamLock = check();
+  assert.equal(upstreamLock.status, 1);
+  assert.match(upstreamLock.stderr, /Cargo\.lock resolves upstream buffa-types/u);
+  writeFileSync(lockPath, lock);
+
+  const privateManifest = join(root, "private/Cargo.toml");
+  const manifest = readFileSync(privateManifest, "utf8");
+  writeFileSync(privateManifest, `${manifest}\n[build-dependencies]\nrenamed = { package = "buffa-build", version = "0.9.2" }\n`);
+  const upstreamBuild = check();
+  assert.equal(upstreamBuild.status, 1);
+  assert.match(upstreamBuild.stderr, /private-fixture depends on upstream buffa-build/u);
+  writeFileSync(privateManifest, manifest);
+
+  for (const [configured, diagnostic] of [
+    [{ ...policy, msrv: policy.msrv.slice(0, 1) }, /public-second is missing a CI test.*1\.99\.1/u],
+    [{ ...policy, msrv: [...policy.msrv, policy.msrv[0]] }, /distinct publishable workspace crates/u],
+    [{ ...policy, msrv: [...policy.msrv, { ...policy.msrv[0], package: "private-fixture" }] }, /distinct publishable workspace crates/u],
+    [{ ...policy, artifacts: [{ ...policy.artifacts[0], run: "cargo +stable publish --locked" }] }, /artifact steps must use cargo \+1\.100\.0/u],
+  ]) {
+    const failed = check(configured);
+    assert.equal(failed.status, 1);
+    assert.match(failed.stderr, diagnostic);
+  }
+
+  for (const [path, content, diagnostic] of [
+    ["rust-toolchain.toml", toolchain.replace("1.100.0", "stable"), /must select Rust 1\.100\.0/u],
+    ["rust-toolchain.toml", toolchain.replace("1.100.0", "1.100"), /must select Rust 1\.100\.0/u],
+    [policy.release.workflow, workflow.replace("cargo +1.100.0 test", "cargo +stable test"), /Test release run command changed/u],
+    [policy.release.workflow, workflow.replace("cargo +1.100.0 publish", "cargo +stable publish"), /Publish first crate run command changed/u],
+    [policy.release.workflow, workflow.replace("cargo +1.99.1 test", "cargo +1.99.0 test"), /Test second crate run command changed/u],
+    [policy.release.workflow, workflow.replace("cargo +1.96.0 test", "cargo +1.96.0 check"), /Test first crate run command changed/u],
+    ["second/Cargo.toml", '[package]\nname = "public-second"\nversion = "0.1.0"\n', /public-second must declare rust-version/u],
+  ]) {
+    const absolute = join(root, path);
+    const original = readFileSync(absolute, "utf8");
+    writeFileSync(absolute, content);
+    const failed = check();
+    assert.equal(failed.status, 1);
+    assert.match(failed.stderr, diagnostic);
+    writeFileSync(absolute, original);
+  }
+});
+
+test("Rust dependency review requires the locked graph and a blocking advisory check", (t) => {
+  const { root, policy, check, workflow } = createRustReleaseFixture();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const path = join(root, policy.dependencyReview.workflow);
+  const pinnedInstall = "      - name: Install cargo-deny\n        run: cargo +1.100.0 install cargo-deny --version '=0.20.2' --locked\n";
+  for (const [configured, diagnostic] of [
+    [workflow.replace("deny --locked", "deny"), /Check locked dependencies run command changed/u],
+    [workflow.replace("advisories licenses sources", "licenses sources"), /Check locked dependencies run command changed/u],
+    [workflow.replace("'=0.20.2'", "'0.20.2'"), /Install cargo-deny run command changed/u],
+    [workflow.replace(pinnedInstall, "") + pinnedInstall, /must install Cargo Deny before dependency review/u],
+    [workflow.replace("  audit:\n", "  audit:\n    continue-on-error: true\n"), /must fail CI when verification fails/u],
+  ]) {
+    writeFileSync(path, configured);
+    const failed = check();
+    assert.equal(failed.status, 1);
+    assert.match(failed.stderr, diagnostic);
+  }
+  writeFileSync(path, workflow);
+  const lockPath = join(root, "Cargo.lock");
+  const original = readFileSync(lockPath, "utf8");
+  const passed = check();
+  assert.equal(passed.status, 0, passed.stderr);
+  assert.equal(readFileSync(lockPath, "utf8"), original);
+  rmSync(lockPath);
+  const missing = check();
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /Cargo\.lock is missing from the worktree/u);
+});
+
+test("protobuf-first SDK verification requires tracked shared fixtures and every declared lane", () => {
+  const { root, policy, sdkConformance, check, sdkWorkflow } = createProtobufFirstFixture();
+  const configured = { ...policy, sdkConformance };
+  const passed = check(configured);
+  assert.equal(passed.status, 0, passed.stderr);
+
+  const workflowPath = join(root, sdkConformance.lanes[0].workflow);
+  const jobDirectory = sdkWorkflow
+    .replace("  wasm:\n", "  wasm:\n    defaults:\n      run:\n        working-directory: sdk/ts\n")
+    .replace("        working-directory: sdk/ts\n        run: npm", "        run: npm");
+  writeFileSync(workflowPath, jobDirectory);
+  const inheritedDirectory = check(configured);
+  assert.equal(inheritedDirectory.status, 0, inheritedDirectory.stderr);
+
+  for (const [conformance, diagnostic] of [
+    [null, /sdkConformance must be an object/u],
+    [{ ...sdkConformance, lanes: [] }, /at least one SDK lane/u],
+    [{ ...sdkConformance, lanes: [sdkConformance.lanes[0], sdkConformance.lanes[0]] }, /distinct lowercase SDK identifiers/u],
+    [{ ...sdkConformance, lanes: [sdkConformance.lanes[0], { ...sdkConformance.lanes[0], sdk: "other" }] }, /distinct workflow steps/u],
+    [{ ...sdkConformance, sharedFixtures: ["conformance/local.json"] }, /local\.json is not tracked/u],
+  ]) {
+    const failed = check({ ...policy, sdkConformance: conformance });
+    assert.equal(failed.status, 1);
+    assert.match(failed.stderr, diagnostic);
+  }
+
+  for (const [workflow, diagnostic] of [
+    [sdkWorkflow.replace("    steps:\n      - name: Verify wire\n        run: ./scripts/check-swift-wire.sh", "    steps:\n      - name: Other step\n        run: ./scripts/check-swift-wire.sh"), /missing workflow step swift\/Verify wire/u],
+    [sdkWorkflow.replace("      - name: Verify wire\n        run: ./scripts/check-swift-wire.sh", "      - name: Print template\n        run: |\n          - name: Verify wire\n            run: ./scripts/check-swift-wire.sh"), /missing workflow step swift\/Verify wire/u],
+    [sdkWorkflow.replace("        run: ./gradlew checkWire", '        "if": github.event_name == \'push\'\n        run: ./gradlew checkWire'), /must run without an if condition/u],
+    [sdkWorkflow.replace("  jni:\n", "  jni:\n    if: github.event_name == 'push'\n"), /must run without an if condition/u],
+    [sdkWorkflow.replace("  jni:\n", "  jni:\n    'continue-on-error': true\n"), /must fail CI when verification fails/u],
+    [sdkWorkflow.replace("        run: ./gradlew checkWire", "        continue-on-error: true\n        run: ./gradlew checkWire"), /must fail CI when verification fails/u],
+    [sdkWorkflow.replace("working-directory: sdk/ts", "working-directory: sdk"), /working directory does not match the policy/u],
+    [`defaults:\n  run:\n    working-directory: sdk\n${sdkWorkflow}`, /working directory does not match the policy/u],
+    [sdkWorkflow.replace("on: [push, pull_request]", "on: workflow_dispatch"), /does not run for source changes/u],
+  ]) {
+    writeFileSync(workflowPath, workflow);
+    const failed = check(configured);
+    assert.equal(failed.status, 1);
+    assert.match(failed.stderr, diagnostic);
+  }
+});
+
 test("exact workflow checks can disambiguate repeated step names by job", () => {
   const root = createFixture();
   writeFileSync(
@@ -1666,6 +1969,60 @@ test("repository shape policy accepts a declared protocol-engine layout", () => 
   context.assertRepositoryShapePolicy(protocolShapePolicy);
 });
 
+test("foundational libraries require a tracked consumer contract", () => {
+  const root = createTrackedFixture();
+  for (const path of ["crates/library", "contracts", "docs"]) {
+    mkdirSync(join(root, path), { recursive: true });
+  }
+  writeFileSync(join(root, "Cargo.toml"), '[workspace]\nmembers = ["crates/library"]\n');
+  writeFileSync(join(root, "crates/library/Cargo.toml"), '[package]\nname = "library"\n');
+  writeFileSync(join(root, "docs/README.md"), "Architecture\n");
+  writeFileSync(join(root, "scripts/check_release_readiness.mjs"), "export {};\n");
+  writeFileSync(join(root, "contracts/README.md"), "# Library consumer contract\n");
+  writeFileSync(join(root, "contracts/other.md"), "Related contract\n");
+  rmSync(join(root, "generated"), { recursive: true });
+  const stage = (paths) => {
+    const result = spawnSync("git", ["add", "--", ...paths], { cwd: root, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  };
+  stage(["Cargo.toml", "crates", "docs", "scripts", "generated", "contracts/other.md"]);
+  const policy = {
+    archetype: "foundational-library",
+    requiredLanes: ["crates", "contracts", "docs", "scripts", ".github"],
+    crates: [{ path: "crates/library", role: "domain" }],
+  };
+  const check = (configured = policy) => runTrackedFixtureScript(
+    root, `context.assertRepositoryShapePolicy(${JSON.stringify(configured)});`,
+  );
+
+  const untracked = check();
+  assert.equal(untracked.status, 1);
+  assert.match(untracked.stderr, /contracts\/README\.md is not tracked by Git/u);
+
+  stage(["contracts/README.md"]);
+  const valid = check();
+  assert.equal(valid.status, 0, valid.stderr);
+
+  const optionalLane = check({
+    ...policy,
+    requiredLanes: policy.requiredLanes.filter((lane) => lane !== "contracts"),
+    optionalLanes: ["contracts"],
+  });
+  assert.equal(optionalLane.status, 1);
+  assert.match(optionalLane.stderr, /foundational-library requires lane contracts/u);
+
+  writeFileSync(join(root, "contracts/README.md"), " \n");
+  const empty = check();
+  assert.equal(empty.status, 1);
+  assert.match(empty.stderr, /must document the library's consumer contract/u);
+
+  rmSync(join(root, "contracts/README.md"));
+  symlinkSync("other.md", join(root, "contracts/README.md"));
+  const symlink = check();
+  assert.equal(symlink.status, 1);
+  assert.match(symlink.stderr, /contracts\/README\.md must not be a symbolic link/u);
+});
+
 test("repository shape policy accepts a declared application layout", () => {
   const root = createApplicationShapeFixture();
   const context = createContext(root);
@@ -1805,7 +2162,7 @@ test("repository shape policy permits at most one facade", () => {
 
 test("repository shape policy rejects a facade with nothing to aggregate", () => {
   const root = createFixture();
-  for (const directory of ["crates/product", "docs", "scripts/release-readiness"]) {
+  for (const directory of ["crates/product", "contracts", "docs", "scripts/release-readiness"]) {
     mkdirSync(join(root, directory), { recursive: true });
   }
   copyFileSync(
@@ -1818,6 +2175,7 @@ test("repository shape policy rejects a facade with nothing to aggregate", () =>
     '[package]\nname = "product"\n',
   );
   writeFileSync(join(root, "docs", "README.md"), "docs\n");
+  writeFileSync(join(root, "contracts", "README.md"), "# Library consumer contract\n");
   writeFileSync(join(root, "scripts", "check_release_readiness.mjs"), "export {};\n");
   const gitInit = spawnSync("git", ["init", "--quiet"], { cwd: root, encoding: "utf8" });
   assert.equal(gitInit.status, 0, gitInit.stderr);
@@ -1825,7 +2183,7 @@ test("repository shape policy rejects a facade with nothing to aggregate", () =>
   assert.equal(gitAdd.status, 0, gitAdd.stderr);
   const policy = {
     archetype: "foundational-library",
-    requiredLanes: ["crates", "docs", "scripts", ".github"],
+    requiredLanes: ["crates", "contracts", "docs", "scripts", ".github"],
     optionalLanes: [],
     exceptions: [],
     crates: [{ path: "crates/product", role: "facade" }],
@@ -3457,9 +3815,11 @@ JSON is a generated ProtoJSON request convenience. Results remain one fully disc
     join(root, "buf.gen.yaml"),
     `version: v2
 plugins:
-  - local: protoc-gen-buffa
+  - local: protoc-gen-reallyme-buffa
     out: generated
     opt: [views=true,json=true]
+  - local: protoc-gen-reallyme-buffa-packaging
+    out: generated
 `,
   );
   writeFileSync(
@@ -3800,39 +4160,190 @@ message ResolveResult { bytes document = 1; }
   );
 });
 
+// Keep the fixture focused on the declarations emitted by native Buffa that
+// the policy consumes. The fixture does not need a Rust toolchain to run.
+const nativeBuffaMessage = (name, protoName, fields) =>
+  `// @generated by reallyme-buffa-codegen 0.1.2. DO NOT EDIT.
+pub struct ${name} {
+${fields.map((field) => `    pub ${field}: crate::guarded::SecretBytes,`).join("\n")}
+}
+impl ::core::fmt::Debug for ${name} {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("${name}")
+${fields.map((field) => `            .field("${field}", &::core::format_args!("[REDACTED]"))`).join("\n")}
+            .finish()
+    }
+}
+impl ::buffa::sensitive::Zeroize for ${name} {
+    fn zeroize(&mut self) {
+${fields.map((field) => `        ::buffa::sensitive::Zeroize::zeroize(&mut self.${field});`).join("\n")}
+    }
+}
+impl ::buffa::sensitive::ZeroizeOnDrop for ${name} {}
+impl ::core::ops::Drop for ${name} {
+    fn drop(&mut self) {
+        ::buffa::sensitive::Zeroize::zeroize(self);
+    }
+}
+impl ::buffa::MessageName for ${name} {
+    const FULL_NAME: &'static str = "${protoName}";
+}
+impl<'de> ::serde::Deserialize<'de> for ${name} {
+    fn deserialize<__D: ::serde::Deserializer<'de>>(d: __D) -> ::core::result::Result<Self, __D::Error> {
+        Err(<__D::Error as ::serde::de::Error>::custom(::buffa::sensitive::JsonErrorReason::UnknownField))
+    }
+}
+`;
+
+test("native Buffa protects classified fields without a rewrite script", (t) => {
+  const root = createFixture();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const config = `version: v2
+plugins:
+  - local: protoc-gen-reallyme-buffa
+    opt:
+      - views=true
+      - json=true
+      - zeroize_in=example.v1.Request.
+      - unknown_fields=false
+      - deny_unknown_json_fields=true
+      - borrowed_views_only_in=.example.v1.Request
+      - bytes_type_custom_in=.example.v1.Request=crate::guarded::SecretBytes
+      - string_type_custom_in=.example.v1.Request=crate::guarded::SecretString
+      - json_policy_type=crate::guarded::SecretBytes
+      - json_policy_type=crate::guarded::SecretString
+  - local: protoc-gen-reallyme-buffa-packaging
+`;
+  const schema = `syntax = "proto3";
+package example.v1;
+  message Request { bytes value = 1; optional string label = 2 [json_name = 'label]alias'];
+    repeated bytes chunks = 3;
+    oneof detail { string text = 4; uint32 number = 5; }
+  }
+message Response { string label = 1; }
+`;
+  const rust = nativeBuffaMessage("RustRequest", "example.v1.Request", ["value", "label", "chunks", "detail"]);
+  const policy = {
+    protoSchema: "schema.proto",
+    generatedRust: "native.rs",
+    buffaVersion: "0.1.2",
+    scalarFieldClassifications: [
+      { message: "Request", field: "value", kind: "bytes", sensitivity: "sensitive" },
+      { message: "Request", field: "label", kind: "string", sensitivity: "sensitive" },
+      { message: "Request", field: "chunks", kind: "bytes", sensitivity: "sensitive" },
+      { message: "Request", field: "text", kind: "string", sensitivity: "sensitive" },
+      { message: "Response", field: "label", kind: "string", sensitivity: "public" },
+    ],
+  };
+  const cases = [
+    ["buf.gen.yaml", config, [
+      [config.replace("zeroize_in=example.v1.Request.", "zeroize_in=.example.v1.RequestOther"), /must enable native zeroization/u],
+      [config.replace("unknown_fields=false", "unknown_fields=true"), /must disable binary unknown-field storage/u],
+      [config.replace("unknown_fields=false", "unknown_fields=false,unknown_fields_in=.example.v1"), /must disable binary unknown-field storage/u],
+      [config.replace("deny_unknown_json_fields=true", "deny_unknown_json_fields=false"), /must reject unknown ProtoJSON fields/u],
+      [config.replace("borrowed_views_only_in=.example.v1.Request", "borrowed_views_only_in=.example.v1.Response"), /must use borrowed-only Buffa views/u],
+      [config.replace("views=true", "views=true,skip_debug=.example.v1"), /must keep native Debug redaction/u],
+      [config.replace("bytes_type_custom_in=.example.v1.Request=", "bytes_type_custom_in=.example.v1.RequestOther="), /must configure a guarded bytes owner/u],
+      [config.replace("json_policy_type=crate::guarded::SecretString", "json_policy_type=crate::guarded::SecretString, string_type_custom_in=.example.v1.Request.text=crate::AnotherString"), /json_policy_type.*Request\.text/u],
+    ]],
+    ["schema.proto", schema, [
+      [schema.replace("string label = 1;", "string label = 1; bytes addition = 2;"), /unclassified protobuf scalar field Response\.addition:bytes/u],
+      [schema.replace("bytes value = 1;", "bytes rawValue = 1;"), /unclassified protobuf scalar field Request\.rawValue:bytes/u],
+      [schema.replace("optional string label", "optional bytes label"), /unclassified protobuf scalar field Request\.label:bytes/u],
+      [schema.replace("bytes value = 1;", ""), /classification is stale for Request\.value:bytes/u],
+      [schema.replace("bytes value = 1;", "bytes value = 1; message Inner { bytes value = 1; }"), /nested messages or groups/u],
+      [schema.replace("bytes value = 1;", "map<string, int32> value = 1;"), /maps with bytes\/string members/u],
+    ]],
+    ["native.rs", rust, [
+      [rust.replace("0.1.2", "0.1.1"), /must identify the pinned native Buffa generator/u],
+      [rust + "\nfn __reallyme_wipe() {}\n", /contains a legacy hardening shim/u],
+      [rust.replace("::buffa::sensitive::Zeroize::zeroize(self);", ""), /missing native Buffa zeroization/u],
+      [rust.replace('::core::format_args!("[REDACTED]")', "self.value"), /missing native Buffa Debug redaction/u],
+      [rust.replace("pub value:", "pub __buffa_unknown_fields:"), /without binary unknown-field storage/u],
+      [rust.replace("JsonErrorReason::UnknownField", "JsonErrorReason::Other"), /must reject unknown ProtoJSON fields/u],
+    ]],
+  ];
+  const check = (configuration = policy) => runFixtureScript(
+    root, `context.assertGeneratedProtoHardeningPolicy(${JSON.stringify(configuration)});`,
+  );
+  for (const [path, original] of cases) {
+    writeFileSync(join(root, path), original);
+  }
+  createContext(root).assertGeneratedProtoHardeningPolicy(policy);
+  for (const [path, original, mutations] of cases) {
+    for (const [changed, diagnostic] of mutations) {
+      assert.notEqual(changed, original);
+      writeFileSync(join(root, path), changed);
+      const rejected = check();
+      assert.equal(rejected.status, 1, rejected.stderr);
+      assert.match(rejected.stderr, diagnostic);
+    }
+    writeFileSync(join(root, path), original);
+  }
+  const duplicate = check({
+    ...policy,
+    scalarFieldClassifications: [...policy.scalarFieldClassifications, policy.scalarFieldClassifications[0]],
+  });
+  assert.equal(duplicate.status, 1);
+  assert.match(duplicate.stderr, /classification is duplicated/u);
+  const legacy = check({ ...policy, hardeningScript: "scripts/harden.mjs" });
+  assert.equal(legacy.status, 1);
+  assert.match(legacy.stderr, /remove legacy hardening script settings/u);
+});
+
 test("ReallyMe protobuf release policy defaults to the external runner", () => {
   const root = createFixture();
   const context = createContext(root);
   mkdirSync(join(root, "generated"), { recursive: true });
-  writeFileSync(join(root, "harden.mjs"), 'const option = "--check-idempotent";\nredact\n');
+  mkdirSync(join(root, "crates/proto/src"), { recursive: true });
+  const manifest = `[workspace]
+members = ["crates/proto"]
+resolver = "3"
+
+[workspace.dependencies]
+buffa = { package = "reallyme-buffa", version = "=0.1.2", features = ["json", "zeroize"] }
+`;
+  writeFileSync(join(root, "Cargo.toml"), manifest);
+  const protoManifest = `[package]
+name = "example-proto"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+buffa = { workspace = true }
+`;
+  const protoManifestPath = join(root, "crates/proto/Cargo.toml");
+  writeFileSync(protoManifestPath, protoManifest);
+  writeFileSync(join(root, "crates/proto/src/lib.rs"), "");
+  const bufConfig = `version: v2
+plugins:
+  - local: 'protoc-gen-reallyme-buffa' # message generator
+    out: generated
+    opt:
+      - views=true
+      - json=true
+      - unknown_fields=false
+      - zeroize_in=.example.v1.SensitiveBytes
+      - deny_unknown_json_fields_in=.example.v1.SensitiveBytes
+      - bytes_type_custom_in=.example.v1.SensitiveBytes=crate::guarded::SecretBytes
+      - json_policy_type=crate::guarded::SecretBytes
+      - borrowed_views_only_in=.example.v1.SensitiveBytes
+  - local: protoc-gen-reallyme-buffa-packaging
+    out: generated
+`;
+  writeFileSync(join(root, "buf.gen.yaml"), bufConfig);
   writeFileSync(
     join(root, "schema.proto"),
     `syntax = "proto3";
+package example.v1;
 message SensitiveBytes {
   bytes value = 1;
 }
 `,
   );
-  writeFileSync(
-    join(root, "generated.rs"),
-    `pub struct SensitiveBytes {
-    pub value: ::buffa::alloc::vec::Vec<u8>,
-}
-impl ::core::fmt::Debug for SensitiveBytes {
-    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-        f.debug_struct("SensitiveBytes").field("value", &"<redacted>").finish()
-    }
-}
-impl ::core::ops::Drop for SensitiveBytes {
-    fn drop(&mut self) {
-        ::zeroize::Zeroize::zeroize(&mut self.value);
-    }
-}
-struct Wire {
-    value: ::zeroize::Zeroizing<::buffa::alloc::vec::Vec<u8>>,
-}
-`,
-  );
+  const generatedPath = join(root, "generated", "example.v1.schema.rs");
+  const generatedRust = nativeBuffaMessage("SensitiveBytes", "example.v1.SensitiveBytes", ["value"]);
+  writeFileSync(generatedPath, generatedRust);
   writeFileSync(
     join(root, ".github", "workflows", "protobuf-ci.yml"),
     `name: Protobuf
@@ -3842,7 +4353,7 @@ on:
       - scripts/check_release_readiness.mjs
 env:
   BUF_VERSION: 1.72.0
-  BUFFA_VERSION: 0.9.2
+  BUFFA_VERSION: 0.1.2
 jobs:
   check:
     steps:
@@ -3850,8 +4361,8 @@ jobs:
         uses: bufbuild/buf-action@${fullSha}
       - name: Install pinned Buffa generators
         run: |
-          cargo install protoc-gen-buffa --version "$BUFFA_VERSION" --locked
-          cargo install protoc-gen-buffa-packaging --version "$BUFFA_VERSION" --locked
+          cargo install reallyme-protoc-gen-buffa --version "=$BUFFA_VERSION" --locked
+          cargo install reallyme-protoc-gen-buffa-packaging --version "=$BUFFA_VERSION" --locked
       - name: Lint protobuf schema
         run: buf lint
       - name: Regenerate protobuf artifacts
@@ -3868,10 +4379,8 @@ jobs:
       commands: [["node", ["--version"]]],
     },
     hardeningPolicy: {
-      hardeningScript: "harden.mjs",
       protoSchema: "schema.proto",
-      generatedRust: "generated.rs",
-      requiredScriptNeedles: ["redact"],
+      generatedRust: "generated/example.v1.schema.rs",
       scalarFieldClassifications: [
         {
           message: "SensitiveBytes",
@@ -3880,13 +4389,65 @@ jobs:
           sensitivity: "sensitive",
         },
       ],
-      requiredGeneratedNeedles: ["pub struct SensitiveBytes"],
-      forbiddenGeneratedNeedles: ["::buffa::alloc::format!("],
-      requireStrictJson: false,
-      requireUnknownFieldZeroization: false,
     },
   };
   context.assertReallyMeProtobufReleasePolicy(policy);
+
+  const check = (configured = policy, env = process.env) => runFixtureScript(
+    root, `context.assertReallyMeProtobufReleasePolicy(${JSON.stringify(configured)});`, env,
+  );
+  const configPath = join(root, "buf.gen.yaml");
+  for (const [config, reason] of [
+    [bufConfig.replace("'protoc-gen-reallyme-buffa'", "protoc-gen-buffa"), /must use the ReallyMe Buffa plugins/u],
+    [bufConfig.replace("  - local: protoc-gen-reallyme-buffa-packaging", "  # - local: protoc-gen-reallyme-buffa-packaging"), /must declare local plugin protoc-gen-reallyme-buffa-packaging exactly once/u],
+    [bufConfig.replace("      - json=true\n", "") + "    opt: [json=true]\n", /must set json=true exactly once/u],
+    [bufConfig.replace("      - views=true", "      - views=true, views = false"), /must set views=true exactly once/u],
+    [bufConfig + "  - local: [protoc-gen-buffa-packaging]\n    out: generated\n", /must use the ReallyMe Buffa plugins/u],
+    [bufConfig + "  - remote: buf.build/example/buffa:v1.0.0\n    out: generated\n", /must use the ReallyMe Buffa plugins/u],
+  ]) {
+    writeFileSync(configPath, config);
+    const rejected = check();
+    assert.equal(rejected.status, 1);
+    assert.match(rejected.stderr, reason);
+  }
+  writeFileSync(configPath, bufConfig);
+
+  const manifestPath = join(root, "Cargo.toml");
+  for (const [dependency, reason] of [
+    [manifest.replace('package = "reallyme-buffa", ', ""), /depends on upstream buffa/u],
+    [manifest.replace('"=0.1.2"', '"0.1.2"'), /expected =0\.1\.2/u],
+    [manifest.replace('version = "=0.1.2"', 'version = "=0.1.2", git = "https://example.com/buffa"'), /must resolve from a registry/u],
+    [manifest.replace('["json", "zeroize"]', '["json"]'), /must enable the zeroize feature on buffa/u],
+  ]) {
+    writeFileSync(manifestPath, dependency);
+    const rejected = check();
+    assert.equal(rejected.status, 1);
+    assert.match(rejected.stderr, reason);
+  }
+  writeFileSync(manifestPath, manifest.replace(', features = ["json", "zeroize"]', ""));
+  writeFileSync(protoManifestPath, `${protoManifest}\n[features]\ngenerated = ["buffa/json", "buffa/zeroize"]\n`);
+  const forwardedFeatures = check();
+  assert.equal(forwardedFeatures.status, 0, forwardedFeatures.stderr);
+  writeFileSync(protoManifestPath, protoManifest);
+  writeFileSync(manifestPath, manifest);
+
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  const generatorNames = ["protoc-gen-reallyme-buffa", "protoc-gen-reallyme-buffa-packaging"];
+  const writeVersion = (generator, version) => writeFileSync(
+    join(bin, generator), `#!/bin/sh\nprintf '%s\\n' '${generator} ${version}'\n`, { mode: 0o755 },
+  );
+  for (const generator of generatorNames) {
+    writeVersion(generator, "0.1.2");
+  }
+  const freshnessPolicy = { ...policy, generatedFreshnessMode: true };
+  const env = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}` };
+  const fresh = check(freshnessPolicy, env);
+  assert.equal(fresh.status, 0, fresh.stderr);
+  writeVersion(generatorNames[1], "0.1.0");
+  const stale = check(freshnessPolicy, env);
+  assert.equal(stale.status, 1);
+  assert.match(stale.stderr, /protoc-gen-reallyme-buffa-packaging must report version 0\.1\.2/u);
 
   const alternatePin = "abcdef0123456789abcdef0123456789abcdef01";
   const workflowPath = join(root, ".github", "workflows", "protobuf-ci.yml");
@@ -3907,8 +4468,16 @@ jobs:
 
   const newerToolchain = workflow
     .replace("BUF_VERSION: 1.72.0", 'BUF_VERSION: "1.73.0"')
-    .replace("BUFFA_VERSION: 0.9.2", "BUFFA_VERSION: 0.10.0");
+    .replace("BUFFA_VERSION: 0.1.2", "BUFFA_VERSION: 0.2.0");
   writeFileSync(workflowPath, newerToolchain);
+  const drift = check();
+  assert.equal(drift.status, 1);
+  assert.match(drift.stderr, /expected =0\.2\.0/u);
+  writeFileSync(manifestPath, manifest.replace("=0.1.2", "=0.2.0"));
+  const generatorDrift = check();
+  assert.equal(generatorDrift.status, 1);
+  assert.match(generatorDrift.stderr, /must identify the pinned native Buffa generator 0\.2\.0/u);
+  writeFileSync(generatedPath, generatedRust.replace("0.1.2", "0.2.0"));
   context.assertReallyMeProtobufReleasePolicy(policy);
   const explicitVersion = runFixtureScript(
     root,
@@ -3919,6 +4488,29 @@ jobs:
   );
   assert.equal(explicitVersion.status, 1);
   assert.match(explicitVersion.stderr, /BUF_VERSION does not match the configured version/u);
+  writeFileSync(manifestPath, manifest);
+  writeFileSync(generatedPath, generatedRust);
+  writeFileSync(workflowPath, workflow);
+
+  const outsidePath = "outside.rs";
+  writeFileSync(join(root, outsidePath), generatedRust);
+  const outside = check({
+    ...policy,
+    hardeningPolicy: { ...policy.hardeningPolicy, generatedRust: outsidePath },
+  });
+  assert.equal(outside.status, 1);
+  assert.match(outside.stderr, /generatedRust must be inside a declared regeneration directory/u);
+
+  for (const install of [
+    workflow.replace("install reallyme-protoc-gen-buffa ", "install protoc-gen-buffa "),
+    workflow.replace('"=$BUFFA_VERSION"', '"$BUFFA_VERSION"'),
+    workflow.replace('reallyme-protoc-gen-buffa-packaging --version "=$BUFFA_VERSION"', 'reallyme-protoc-gen-buffa-packaging --version "=0.1.0"'),
+  ]) {
+    writeFileSync(workflowPath, install);
+    const rejected = check();
+    assert.equal(rejected.status, 1);
+    assert.match(rejected.stderr, /step Install pinned Buffa generators run command changed/u);
+  }
 
   for (const invalidWorkflow of [
     workflow.replace("BUF_VERSION: 1.72.0", "BUF_VERSION: latest"),
@@ -4152,290 +4744,18 @@ test("local checker template is syntactically valid and fails closed by construc
   assert.match(template, /assertReallyMeRustProtoRepositoryPolicy/u);
   assert.match(template, /assertNoTemplateMarkers\(repositoryPolicy\)/u);
   assert.match(template, /validatePublishablePathDependencies: true/u);
-  assert.match(template, /version: "0\.7\.0"/u);
+  assert.match(template, /version: "0\.8\.0"/u);
   assert.match(template, /versionFromWorkflowEnv: true/u);
   assert.match(template, /installBufAction: "bufbuild\/buf-action"/u);
   assert.match(template, /REPLACE_SECRET_BYTE_FIELD/u);
   assert.doesNotMatch(template, /requireTrackedFiles: false/u);
 });
 
-test("generated hardening supports message-scoped sensitive field names", () => {
-  const root = createFixture();
-  const context = createContext(root);
-  writeFileSync(
-    join(root, "schema.proto"),
-    `syntax = "proto3";
-message SensitiveBytes {
-  bytes value = 1;
-}
-`,
-  );
-  writeFileSync(
-    join(root, "harden.mjs"),
-    'const option = "--check-idempotent";\ndeserialize_zeroizing_bytes\n',
-  );
-  writeFileSync(
-    join(root, "generated.rs"),
-    `#[derive(Clone, PartialEq, Default)]
-pub struct SensitiveBytes {
-    pub value: ::buffa::alloc::vec::Vec<u8>,
-}
-impl ::core::fmt::Debug for SensitiveBytes {
-    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-        f.debug_struct("SensitiveBytes").field("value", &"<redacted>").finish()
-    }
-}
-impl ::core::ops::Drop for SensitiveBytes {
-    fn drop(&mut self) {
-        ::zeroize::Zeroize::zeroize(&mut self.value);
-    }
-}
-struct Wire {
-    value: ::zeroize::Zeroizing<::buffa::alloc::vec::Vec<u8>>,
-}
-#[derive(Clone, PartialEq, Default)]
-pub struct PublicValue {
-    pub value: u32,
-}
-impl ::core::fmt::Debug for PublicValue {
-    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-        f.debug_struct("PublicValue").field("value", &self.value).finish()
-    }
-}
-`,
-  );
-
-  context.assertGeneratedProtoHardeningPolicy({
-    hardeningScript: "harden.mjs",
-    protoSchema: "schema.proto",
-    generatedRust: "generated.rs",
-    requiredScriptNeedles: ["deserialize_zeroizing_bytes"],
-    scalarFieldClassifications: [
-      {
-        message: "SensitiveBytes",
-        field: "value",
-        kind: "bytes",
-        sensitivity: "sensitive",
-      },
-    ],
-    requiredGeneratedNeedles: ["pub struct SensitiveBytes"],
-    forbiddenGeneratedNeedles: ["::buffa::alloc::format!("],
-    requireStrictJson: false,
-    requireUnknownFieldZeroization: false,
-  });
-
-  writeFileSync(join(root, "harden.mjs"), "deserialize_zeroizing_bytes\n");
-  const result = runFixtureScript(
-    root,
-    `context.assertGeneratedProtoHardeningPolicy({
-  hardeningScript: "harden.mjs",
-  protoSchema: "schema.proto",
-  generatedRust: "generated.rs",
-  requiredScriptNeedles: ["deserialize_zeroizing_bytes"],
-  scalarFieldClassifications: [{
-    message: "SensitiveBytes",
-    field: "value",
-    kind: "bytes",
-    sensitivity: "sensitive",
-  }],
-  requiredGeneratedNeedles: ["pub struct SensitiveBytes"],
-  forbiddenGeneratedNeedles: ["::buffa::alloc::format!("],
-  requireStrictJson: false,
-  requireUnknownFieldZeroization: false,
-});`,
-  );
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /does not contain "--check-idempotent"/u);
-});
-
-test("generated hardening requires recursive unknown-field zeroization", () => {
-  const root = createFixture();
-  writeFileSync(
-    join(root, "schema.proto"),
-    `syntax = "proto3";
-message SensitiveBytes {
-  bytes value = 1;
-}
-`,
-  );
-  writeFileSync(
-    join(root, "harden.mjs"),
-    `deserialize_zeroizing_bytes
-const option = "--check-idempotent";
-::buffa::UnknownFieldData::LengthDelimited(bytes)
-`,
-  );
-  writeFileSync(
-    join(root, "generated.rs"),
-    `fn __reallyme_zeroize_unknown_fields(fields: &mut ::buffa::UnknownFields) {
-    for mut field in ::core::mem::take(fields) {
-        if let ::buffa::UnknownFieldData::LengthDelimited(bytes) = &mut field.data {
-            ::zeroize::Zeroize::zeroize(bytes);
-        }
-    }
-}
-#[derive(Clone, PartialEq, Default)]
-pub struct SensitiveBytes {
-    pub value: ::buffa::alloc::vec::Vec<u8>,
-}
-impl ::core::fmt::Debug for SensitiveBytes {
-    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-        f.debug_struct("SensitiveBytes").field("value", &"<redacted>").finish()
-    }
-}
-impl ::core::ops::Drop for SensitiveBytes {
-    fn drop(&mut self) {
-        ::zeroize::Zeroize::zeroize(&mut self.value);
-        __reallyme_zeroize_unknown_fields(&mut self.__buffa_unknown_fields);
-    }
-}
-struct Wire {
-    value: ::zeroize::Zeroizing<::buffa::alloc::vec::Vec<u8>>,
-}
-`,
-  );
-
-  const result = runFixtureScript(
-    root,
-    `context.assertGeneratedProtoHardeningPolicy({
-  hardeningScript: "harden.mjs",
-  protoSchema: "schema.proto",
-  generatedRust: "generated.rs",
-  requiredScriptNeedles: ["deserialize_zeroizing_bytes"],
-  scalarFieldClassifications: [{
-    message: "SensitiveBytes",
-    field: "value",
-    kind: "bytes",
-    sensitivity: "sensitive",
-  }],
-  requiredGeneratedNeedles: ["pub struct SensitiveBytes"],
-  forbiddenGeneratedNeedles: ["::buffa::alloc::format!("],
-  requireStrictJson: false,
-});`,
-  );
-
-  assert.equal(result.status, 1);
-  assert.match(
-    result.stderr,
-    /harden\.mjs does not contain ::buffa::UnknownFieldData::Group\(fields\)/u,
-  );
-});
-
-test("generated hardening rejects every unclassified bytes or string field", () => {
-  const root = createFixture();
-  writeFileSync(join(root, "harden.mjs"), 'const option = "--check-idempotent";\nredact\n');
-  writeFileSync(
-    join(root, "generated.rs"),
-    `pub struct SensitiveBytes {
-    pub value: ::buffa::alloc::vec::Vec<u8>,
-}
-impl ::core::fmt::Debug for SensitiveBytes {
-    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-        f.debug_struct("SensitiveBytes").field("value", &"<redacted>").finish()
-    }
-}
-impl ::core::ops::Drop for SensitiveBytes {
-    fn drop(&mut self) {
-        ::zeroize::Zeroize::zeroize(&mut self.value);
-    }
-}
-struct Wire {
-    value: ::zeroize::Zeroizing<::buffa::alloc::vec::Vec<u8>>,
-}
-`,
-  );
-
-  for (const kind of ["bytes", "string"]) {
-    writeFileSync(
-      join(root, "schema.proto"),
-      `syntax = "proto3";
-message SensitiveBytes { bytes value = 1; optional ${kind} newly_added_secret = 2 [deprecated = true]; }
-`,
-    );
-    const result = runFixtureScript(
-      root,
-      `context.assertGeneratedProtoHardeningPolicy({
-  hardeningScript: "harden.mjs",
-  protoSchema: "schema.proto",
-  generatedRust: "generated.rs",
-  requiredScriptNeedles: ["redact"],
-  scalarFieldClassifications: [{
-    message: "SensitiveBytes",
-    field: "value",
-    kind: "bytes",
-    sensitivity: "sensitive",
-  }],
-  requiredGeneratedNeedles: ["pub struct SensitiveBytes"],
-  forbiddenGeneratedNeedles: ["::buffa::alloc::format!("],
-  requireStrictJson: false,
-  requireUnknownFieldZeroization: false,
-});`,
-    );
-
-    assert.equal(result.status, 1);
-    assert.match(
-      result.stderr,
-      new RegExp(
-        `schema\\.proto has unclassified protobuf scalar field SensitiveBytes\\.newly_added_secret:${kind}`,
-        "u",
-      ),
-    );
-  }
-});
-
-test("generated hardening rejects legal non-style protobuf scalar identifiers", () => {
-  const root = createFixture();
-  writeFileSync(join(root, "harden.mjs"), 'const option = "--check-idempotent";\nredact\n');
-  writeFileSync(
-    join(root, "schema.proto"),
-    `syntax = "proto3";
-message Codec_Secret {
-  bytes sessionToken = 1;
-  string displayName = 2;
-}
-`,
-  );
-  writeFileSync(
-    join(root, "generated.rs"),
-    `pub struct Codec_Secret {
-    pub sessionToken: ::buffa::alloc::vec::Vec<u8>,
-    pub displayName: ::buffa::alloc::string::String,
-}
-`,
-  );
-
-  const result = runFixtureScript(
-    root,
-    `context.assertGeneratedProtoHardeningPolicy({
-  hardeningScript: "harden.mjs",
-  protoSchema: "schema.proto",
-  generatedRust: "generated.rs",
-  requiredScriptNeedles: ["redact"],
-  scalarFieldClassifications: [{
-    message: "Codec_Secret",
-    field: "displayName",
-    kind: "string",
-    sensitivity: "public",
-  }],
-  requiredGeneratedNeedles: ["pub struct Codec_Secret"],
-  forbiddenGeneratedNeedles: ["::buffa::alloc::format!("],
-  requireStrictJson: false,
-  requireUnknownFieldZeroization: false,
-});`,
-  );
-
-  assert.equal(result.status, 1);
-  assert.match(
-    result.stderr,
-    /schema\.proto has unclassified protobuf scalar field Codec_Secret\.sessionToken:bytes/u,
-  );
-});
-
 test("vendored core policy rejects assertions hidden in strings", () => {
   const root = createTrackedFixture();
   writeFileSync(
     join(root, "scripts", "release-readiness", "core.mjs"),
-    `export const RELEASE_READINESS_VERSION = "0.7.0";
+    `export const RELEASE_READINESS_VERSION = "0.8.0";
 const assertReallyMeVendoredCorePolicy = () => {
   "assertGeneratedArtifactsFresh";
   "assertGeneratedProtoHardeningPolicy";
@@ -4501,68 +4821,4 @@ test("vendored core policy accepts the complete current core", () => {
   );
 
   assert.equal(result.status, 0, result.stderr);
-});
-
-test("generated hardening handles indented messages and single-quoted options", () => {
-  const root = createFixture();
-  const context = createContext(root);
-  writeFileSync(join(root, "harden.mjs"), 'const option = "--check-idempotent";\nredact\n');
-  writeFileSync(
-    join(root, "schema.proto"),
-    `syntax = "proto3";
-  message SensitiveBytes {
-    bytes value = 1 [json_name = 'value]alias'];
-    string display_label = 2 [json_name = 'display_label'];
-  }
-`,
-  );
-  writeFileSync(
-    join(root, "generated.rs"),
-    `pub struct SensitiveBytes {
-    pub value: ::buffa::alloc::vec::Vec<u8>,
-    pub display_label: ::buffa::alloc::string::String,
-}
-impl ::core::fmt::Debug for SensitiveBytes {
-    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-        f.debug_struct("SensitiveBytes")
-            .field("value", &"<redacted>")
-            .field("display_label", &self.display_label)
-            .finish()
-    }
-}
-impl ::core::ops::Drop for SensitiveBytes {
-    fn drop(&mut self) {
-        ::zeroize::Zeroize::zeroize(&mut self.value);
-    }
-}
-struct Wire {
-    value: ::zeroize::Zeroizing<::buffa::alloc::vec::Vec<u8>>,
-}
-`,
-  );
-
-  context.assertGeneratedProtoHardeningPolicy({
-    hardeningScript: "harden.mjs",
-    protoSchema: "schema.proto",
-    generatedRust: "generated.rs",
-    requiredScriptNeedles: ["redact"],
-    scalarFieldClassifications: [
-      {
-        message: "SensitiveBytes",
-        field: "value",
-        kind: "bytes",
-        sensitivity: "sensitive",
-      },
-      {
-        message: "SensitiveBytes",
-        field: "display_label",
-        kind: "string",
-        sensitivity: "public",
-      },
-    ],
-    requiredGeneratedNeedles: ["pub struct SensitiveBytes"],
-    forbiddenGeneratedNeedles: ["::buffa::alloc::format!("],
-    requireStrictJson: false,
-    requireUnknownFieldZeroization: false,
-  });
 });

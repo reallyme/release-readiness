@@ -30,7 +30,7 @@ const repositoryPolicy = {
   generatedFreshnessMode,
   releasePackage: {
     scriptPath: "scripts/check_release_readiness.mjs",
-    version: "0.7.0",
+    version: "0.8.0",
   },
   workflowActions: {},
   nodeWorkflows: { nodeVersion: "26" },
@@ -47,6 +47,28 @@ const repositoryPolicy = {
     requireWorkspaceLints: true,
     requirePublishInclude: true,
     validatePublishablePathDependencies: true,
+  },
+  rustRelease: {
+    release: {
+      workflow: ".github/workflows/REPLACE_RUST_WORKFLOW.yml",
+      job: "REPLACE_RELEASE_JOB",
+      step: "Test on the release toolchain",
+    },
+    // Declare release build, package, or publish steps here when present.
+    artifacts: [],
+    msrv: [
+      {
+        package: "REPLACE_PUBLISHABLE_CRATE",
+        workflow: ".github/workflows/REPLACE_RUST_WORKFLOW.yml",
+        job: "REPLACE_MSRV_JOB",
+        step: "Test crate at its declared MSRV",
+      },
+    ],
+    dependencyReview: {
+      workflow: ".github/workflows/REPLACE_RUST_WORKFLOW.yml",
+      job: "REPLACE_DEPENDENCY_REVIEW_JOB",
+      step: "Check locked dependencies",
+    },
   },
   // Opt in after mapping the repository against docs/repository-shapes.md.
   // repositoryShape: {
@@ -194,6 +216,9 @@ const repositoryPolicy = {
     operationResponse: "REPLACE_COMPONENTOperationResponse",
     protoReadme: "REPLACE_PROTO_README",
     protoCargo: "REPLACE_PROTO_CARGO",
+    // The same tracked manifest and Buf configuration are used to validate
+    // the registry runtime against both generators pinned in the workflow.
+    bufGen: "buf.gen.yaml",
     wirePath: "REPLACE_PROCESS_ADAPTER_PATH",
     codecPath: "REPLACE_PROTO_CODEC_PATH",
     // Leave true for service-capable schemas. Set false only for repositories
@@ -233,20 +258,37 @@ const repositoryPolicy = {
     generatedFreshnessStepRun:
       "node .release-readiness/scripts/run-consumer-check.mjs --generated-freshness",
     installBufAction: "bufbuild/buf-action",
+    // Pin BUFFA_VERSION in the workflow and use that exact version for the
+    // reallyme-buffa package aliased as buffa in Cargo.
+    // Enable protobufFirst after mapping the shared schema and verification jobs.
+    // See docs/protobuf-first.md for repositories with and without SDKs.
+    // protobufFirst: {
+    //   contractPath: "contracts/README.md",
+    //   schemaPaths: ["REPLACE_PROTO_SCHEMA"],
+    //   verification: {
+    //     workflow: ".github/workflows/protobuf-ci.yml",
+    //     job: "protobuf",
+    //     step: "Check protobuf contract",
+    //     run: "node scripts/check-protobuf-contract.mjs",
+    //   },
+    //   sdkConformance: {
+    //     sharedFixtures: ["conformance/operation-vectors.json"],
+    //     lanes: [
+    //       {
+    //         sdk: "swift",
+    //         workflow: ".github/workflows/sdk-conformance.yml",
+    //         job: "swift",
+    //         step: "Check Swift wire conformance",
+    //         run: "./scripts/check-swift-wire.sh",
+    //       },
+    //     ],
+    //   },
+    // },
+    // Buffa applies the Rust hardening while generating messages and views.
+    // Configure native selectors in buf.gen.yaml. See templates/README.md.
     hardeningPolicy: {
-      hardeningScript: "REPLACE_HARDENING_SCRIPT",
       protoSchema: "REPLACE_PROTO_SCHEMA",
       generatedRust: "REPLACE_GENERATED_RUST_FILE",
-      generatedView: "REPLACE_GENERATED_VIEW_FILE",
-      protoCargo: "REPLACE_PROTO_CARGO",
-      requiredScriptNeedles: [
-        '"--check-idempotent"',
-        "deserialize_zeroizing_bytes",
-        "zeroize_unknown_fields",
-        "deny_unknown_fields",
-      ],
-      forbiddenScriptNeedles: [],
-      requiredCargoNeedles: ['"buffa/json"', "zeroize"],
       // Every bytes/string field in the schema must appear exactly once.
       scalarFieldClassifications: [
         {
@@ -255,17 +297,6 @@ const repositoryPolicy = {
           kind: "bytes",
           sensitivity: "sensitive",
         },
-      ],
-      requiredGeneratedNeedles: [
-        '.field("REPLACE_SECRET_BYTE_FIELD", &"<redacted>")',
-        "::zeroize::Zeroize::zeroize(&mut self.REPLACE_SECRET_BYTE_FIELD);",
-        "#[serde(default, deny_unknown_fields)]",
-      ],
-      forbiddenGeneratedNeedles: [
-        '.field("REPLACE_SECRET_BYTE_FIELD", &self.REPLACE_SECRET_BYTE_FIELD)',
-      ],
-      requiredViewNeedles: [
-        'formatter.write_str("REPLACE_REDACTED_OWNED_VIEW(<redacted>)")',
       ],
     },
     generatedFreshness: {
@@ -277,7 +308,6 @@ const repositoryPolicy = {
       commands: [
         ["buf", ["lint"]],
         ["buf", ["generate"]],
-        ["node", ["REPLACE_HARDENING_SCRIPT"]],
         ["cargo", ["fmt", "--package", "REPLACE_PROTO_CRATE_NAME"]],
       ],
     },
