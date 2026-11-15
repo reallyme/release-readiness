@@ -275,6 +275,24 @@ forward the verified publication. Publish signs and promotes those versioned
 files. Both steps reuse the AAR and skip native compilation and emulator
 tests. [GitHub artifact download inputs](https://github.com/actions/download-artifact/blob/9000827ccba6bdab643e8b6fd33ac0654aef8333/action.yml)
 
+### Local Maven Central bundle
+
+Repos that publish an Android AAR to Maven Central should provide an executable
+`./scripts/maven-central-bundle.local.sh`. Keep that entry point consistent
+while each repo owns its staging and signing implementation.
+
+Use the version and source SHA approved by Maven preflight. Reuse the tested
+AAR and any JVM publications already staged by preflight. If the local
+bundle needs to build JNI libraries, honor `ANDROID_NDK_HOME` or
+`ANDROID_NDK_VERSION` when supplied. Otherwise use the SDK manager to
+resolve the latest stable NDK and report the selected revision.
+
+Clean only the staging directories owned by the bundle command. Keep
+previously generated ZIPs and unrelated build output. Assemble a versioned
+ZIP in Maven repository layout with the required metadata, checksums, and
+detached signatures. Verify the signatures and print the ZIP path for the
+person uploading it in Central Portal. [Central Portal bundle format](https://central.sonatype.org/publish/publish-portal-upload/)
+
 ## Formal verification
 
 Add a `formal` lane as part of merging a repository's formal-methods work.
