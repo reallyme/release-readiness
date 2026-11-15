@@ -243,6 +243,45 @@ test("workflow-only check catches CI drift before running a consumer checker", (
   assert.match(duplicate.stderr, /ci\.yaml must not exist/u);
 });
 
+test("a scoped public fuzz lane resolves its tracked lockfile before building", (t) => {
+  const root = createConsumer();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const workflow = ".github/workflows/fuzz.yml";
+  const command = "cargo metadata --manifest-path fuzz/Cargo.toml --locked --format-version 1 > /dev/null";
+  const lockCheck = `      - name: Verify fuzz lockfile is current\n        run: ${command}\n`;
+  const build = "      - name: Build fuzz targets\n        run: cargo +nightly-2026-09-15 fuzz build\n";
+  const source = `${reusableHeader("verify")}jobs:\n  verify:\n    runs-on: ubuntu-24.04\n    steps:\n${lockCheck}${build}`;
+  mkdirSync(join(root, ".github/workflows"), { recursive: true });
+  mkdirSync(join(root, "fuzz"));
+  writeFileSync(join(root, "fuzz/Cargo.toml"), "[workspace]\n");
+  writeFileSync(join(root, "fuzz/Cargo.lock"), "version = 4\n");
+  writeFileSync(join(root, workflow), source);
+  stageFiles(root, "fuzz", workflow);
+  installStandardCi(root, { fuzz: { workflow: "fuzz.yml", paths: ["fuzz/"] } });
+
+  const render = () => runConsumer(root, runnerPath, {}, ["--render-ci"]);
+  for (const [broken, diagnostic] of [
+    [source.replace("--format-version 1", "--no-deps --format-version 1"), /must resolve the fuzz dependency graph/u],
+    [source.replace(lockCheck, "") + lockCheck, /must verify the fuzz lockfile before building/u],
+    [source.replace(`run: ${command}`, `if: \${{ inputs.extra }}\n        run: ${command}`), /must run without an if condition/u],
+    [source.replace(`run: ${command}`, `continue-on-error: true\n        run: ${command}`), /must fail CI when verification fails/u],
+    [source.replace(lockCheck, ""), /Verify fuzz lockfile is current/u],
+  ]) {
+    writeFileSync(join(root, workflow), broken);
+    const result = render();
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, diagnostic);
+  }
+  writeFileSync(join(root, workflow), source);
+  const configPath = join(root, ".github/release-readiness.json");
+  const config = JSON.parse(readFileSync(configPath, "utf8"));
+  config.lanes.fuzz.paths = ["fuzz/Cargo.toml"];
+  writeFileSync(configPath, JSON.stringify(config));
+  const incompleteScope = render();
+  assert.equal(incompleteScope.status, 1);
+  assert.match(incompleteScope.stderr, /fuzz lane must cover changes to fuzz\/Cargo\.lock/u);
+});
+
 test("the preflight summary gives the configured publish command and form inputs for an exact main dispatch", (t) => {
   const root = createConsumer();
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -724,7 +763,7 @@ test("runner supplies its immutable package core to the consumer", () => {
     `const coreUrl = process.env.RELEASE_READINESS_CORE_URL;
 if (typeof coreUrl !== "string") process.exit(2);
 const { RELEASE_READINESS_VERSION } = await import(coreUrl);
-if (RELEASE_READINESS_VERSION !== "0.9.4") process.exit(3);
+if (RELEASE_READINESS_VERSION !== "0.9.5") process.exit(3);
 `,
   );
   const result = runConsumer(root);

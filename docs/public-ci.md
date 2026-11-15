@@ -52,10 +52,12 @@ sources and fixtures.
 
 Changes to the lane configuration, `.github/workflows/`, `.github/actions/`,
 `.github/scripts/`, `scripts/`, and the shared Rust, npm, and Buf inputs activate
-every lane. Shell commands can resolve helpers through environment variables,
-working directories, or other scripts, so changes under these automation
-directories always trigger the checks. List build and verification inputs
-outside those paths in the lanes that use them. Repository metadata such as
+every lane. A `.gitattributes` change anywhere in the tree also activates every
+lane because it can change the bytes Git checks out. Shell commands can resolve
+helpers through environment variables, working directories, or other scripts,
+so changes under these automation directories always trigger the checks. List
+build and verification inputs outside those paths in the lanes that use them.
+Repository metadata such as
 issue templates and `CODEOWNERS` only activates unscoped lanes. An unavailable
 comparison base activates every lane. Manual dispatch runs the full suite.
 

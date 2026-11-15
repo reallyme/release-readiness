@@ -11,7 +11,7 @@ import { spawnSync } from "node:child_process";
 // This module is the release package's shared policy core. The public runner
 // supplies this exact immutable module to consumers so release-critical checks
 // cannot drift independently from the pinned package revision.
-export const RELEASE_READINESS_VERSION = "0.9.4";
+export const RELEASE_READINESS_VERSION = "0.9.5";
 
 const DEFAULT_FAILURE_PREFIX = "release readiness check failed";
 const MAX_PRODUCTION_SOURCE_LINES = 500;
@@ -5005,6 +5005,24 @@ export function createReleaseReadinessContext(options) {
     }
   };
 
+  const assertFuzzLockfileWorkflow = (workflow, job) => {
+    const command = "cargo metadata --manifest-path fuzz/Cargo.toml --locked --format-version 1";
+    const check = assertRequiredVerificationStep({
+      workflow, job, step: "Verify fuzz lockfile is current",
+    }, "fuzz lockfile verification", [], (step) => {
+      const run = normalizeWorkflowRunCommand(step.run ?? "");
+      if (run !== command && run !== `${command} > /dev/null`) {
+        fail(`${workflow} must resolve the fuzz dependency graph with ${command}`);
+      }
+    });
+    // cargo-fuzz can rewrite the lockfile, so checking later can hide staleness.
+    const fuzz = /^\s*cargo(?:[ \t]+\S+)?[ \t]+fuzz[ \t]+(?:build|run)(?:\s|$)/mu;
+    if (extractWorkflowSteps(workflow).some((step) =>
+      step.job === job && step.index < check.index && fuzz.test(step.run ?? ""))) {
+      fail(`${workflow} must verify the fuzz lockfile before building or running fuzz targets`);
+    }
+  };
+
   const assertCargoDenyInstallStep = (workflow, job, name, step, lines) => {
     const location = `${workflow} ${job}/${name}`;
     const cargoInstall = `cargo +${RUST_RELEASE_TOOLCHAIN} install cargo-deny --version '=${CARGO_DENY_VERSION}' --locked`;
@@ -6581,6 +6599,7 @@ export function createReleaseReadinessContext(options) {
     readPublicWorkflow,
     readWorkflowStepInputs,
     assertPublicPolicyWorkflow,
+    assertFuzzLockfileWorkflow,
     assertWorkflowRunStep,
     assertWorkflowUsesStep,
     assertWorkflowUsesStepPinnedTo,

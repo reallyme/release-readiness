@@ -41,7 +41,9 @@ const validPath = (path) =>
 
 const matchesPathRule = (path, rule) => rule.endsWith("/") ? path.startsWith(rule) : path === rule;
 
+const checkoutAttributes = /(?:^|\/)\.gitattributes$/u;
 const formalBuildInput = /(?:^|\/)(?:Cargo\.(?:toml|lock)|rust-toolchain(?:\.toml)?|\.cargo\/config(?:\.toml)?)$/u;
+const fuzzWorkspaceInputs = ["fuzz/Cargo.toml", "fuzz/Cargo.lock"];
 
 // The planner runs against Git's NUL-delimited names. Comparing both trees
 // and disabling rename detection makes a deletion or a move out of a lane
@@ -72,12 +74,12 @@ else
   echo "::notice::No reliable diff baseline. Running all CI lanes."
   printf '%s\\n' null >"$changed_file"
 fi
-lanes=$(jq -cen --argjson rules "$LANE_PATHS" --argjson shared "$SHARED_PATHS" --arg formal "$FORMAL_BUILD_INPUT" --slurpfile changes "$changed_file" '
+lanes=$(jq -cen --argjson rules "$LANE_PATHS" --argjson shared "$SHARED_PATHS" --arg attributes "$CHECKOUT_ATTRIBUTES" --arg formal "$FORMAL_BUILD_INPUT" --slurpfile changes "$changed_file" '
   def includes_path($path):
     any(.[]; . as $rule | if endswith("/") then $path | startswith($rule) else . == $path end);
   $changes[0] as $changed | $rules | with_entries(.key as $lane | .value |= (. as $paths |
     $changed == null or ($paths | length == 0) or any($changed[];
-      . as $path | ($shared | includes_path($path)) or ($paths | includes_path($path)) or
+      . as $path | ($shared | includes_path($path)) or ($paths | includes_path($path)) or ($path | test($attributes)) or
       ($lane == "formal" and ($path | test($formal))))))
 ')
 echo "lanes=$lanes" >>"$GITHUB_OUTPUT"`;
@@ -265,6 +267,14 @@ export function readPublicCiConfig(context, trackedFiles, { selfCheck = false } 
       }
       context.assertPublicPolicyWorkflow(path, receiptJob, selfCheck);
     }
+    if (name === "fuzz" && fuzzWorkspaceInputs.every((input) => trackedFiles.has(input))) {
+      for (const input of fuzzWorkspaceInputs) {
+        if (paths.length !== 0 && !paths.some((rule) => matchesPathRule(input, rule))) {
+          fail(`the fuzz lane must cover changes to ${input}`);
+        }
+      }
+      context.assertFuzzLockfileWorkflow(path, receiptJob);
+    }
     if (name === "formal") {
       for (const script of context.assertFormalVerificationWorkflow(path, receiptJob)) {
         if (!trackedFiles.has(script) || context.readText(script).trim().length === 0) {
@@ -324,6 +334,7 @@ export function renderPublicCi(lanes, { mergeQueue = false } = {}) {
           HEAD_SHA: \${{ github.sha }}
           LANE_PATHS: '${JSON.stringify(paths)}'
           SHARED_PATHS: '${JSON.stringify(sharedPaths)}'
+          CHECKOUT_ATTRIBUTES: '${checkoutAttributes.source}'
           FORMAL_BUILD_INPUT: '${formalBuildInput.source}'
         run: |
 ${indent(scopeScript)}
@@ -384,9 +395,10 @@ export function assertPublicCi(context, trackedFiles, options) {
   if (normalize(context.readText(PUBLIC_CI_WORKFLOW)) !== renderPublicCi(lanes, { mergeQueue })) {
     context.fail(`${PUBLIC_CI_WORKFLOW} differs from the standard CI workflow. Regenerate it with --render-ci`);
   }
+  const attributes = [...trackedFiles].filter((path) => checkoutAttributes.test(path));
   const coverage = new Map([...lanes.values()].map(({ path, paths }) => [
     path,
-    paths.length === 0 ? [] : [...sharedPaths, ...paths],
+    paths.length === 0 ? [] : [...sharedPaths, ...attributes, ...paths],
   ]));
   return { coverage, release, mergeQueue, ciLanes: describeCiLanes(lanes), hasAndroidLane: lanes.has("android") };
 }
@@ -401,6 +413,7 @@ export function describeCiLanes(lanes) {
     inputsChanged: (changedPaths) => paths.length === 0 || changedPaths.some((path) =>
       sharedPaths.some((rule) => matchesPathRule(path, rule)) ||
       paths.some((rule) => matchesPathRule(path, rule)) ||
+      checkoutAttributes.test(path) ||
       (name === "formal" && formalBuildInput.test(path))),
   }));
 }

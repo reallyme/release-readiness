@@ -90,7 +90,9 @@ The template enables the following mandatory baseline through
   SHA, so reviewed workflow updates do not require changing the checker;
 - cargo-fuzz installs use the exact workflow `CARGO_FUZZ_VERSION`, are locked,
   and are present in both pull-request and scheduled fuzz lanes through named
-  workflow steps;
+  workflow steps. Public fuzz lanes with a standalone workspace use
+  [full locked resolution](../docs/rust-release.md#lockfiles-and-security-patches)
+  before compiling fuzz targets;
 - Cargo workspace lints, publish include allowlists, and publishable path
   dependency versions are validated;
 - production Rust and examples stay within the 500-line hard ceiling, separate

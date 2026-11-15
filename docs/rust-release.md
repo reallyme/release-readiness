@@ -113,6 +113,21 @@ shipped target and its dependency graph need coverage. Use the
 [shared Cargo Deny template](../templates/deny.toml) for the license baseline
 and retain the repository's source restrictions and reviewed exceptions.
 
+When a public repository's `fuzz` lane has a standalone workspace with a tracked
+`fuzz/Cargo.toml` and `fuzz/Cargo.lock`, include both files if the lane uses
+`paths`. A `fuzz/` directory prefix covers both.
+Run this step from the repository root in the job that reports `verified_sha`,
+after checkout and toolchain setup and before building the fuzz targets:
+
+```yaml
+- name: Verify fuzz lockfile is current
+  run: cargo metadata --manifest-path fuzz/Cargo.toml --locked --format-version 1 > /dev/null
+```
+
+Full dependency resolution detects a stale fuzz lockfile before compilation.
+Use the same command for a local check or in scheduled fuzz jobs that build
+from the standalone workspace. [Cargo metadata reference](https://doc.rust-lang.org/cargo/commands/cargo-metadata.html)
+
 Handle upgrades in a separate reviewed dependency change. A new version alone
 is routine maintenance. Prioritize applicable security fixes. Run the audit
 regularly as well as on changes so new advisories can surface against unchanged

@@ -10,7 +10,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { createReleaseReadinessContext } from "../core.mjs";
-import { PUBLIC_CI_CONFIG, PUBLIC_CI_WORKFLOW, readPublicCiConfig, renderPublicCi } from "../scripts/public-ci.mjs";
+import { PUBLIC_CI_CONFIG, PUBLIC_CI_WORKFLOW, describeCiLanes, readPublicCiConfig, renderPublicCi } from "../scripts/public-ci.mjs";
 
 const adapter = `on:
   workflow_call:
@@ -360,13 +360,17 @@ test("planner handles scoped changes, moves, large diffs and an unknown baseline
   const buildInput = commit("Nested Cargo configuration");
   writeFileSync(join(root, "scripts/build.sh"), "echo new");
   const shellInput = commit("Build helper change");
+  writeFileSync(join(root, ".gitattributes"), "*.sh text eol=lf\n");
+  const rootAttributes = commit("Root checkout attributes");
+  writeFileSync(join(root, "packages/.gitattributes"), "*.swift text eol=lf\n");
+  const nestedAttributes = commit("Nested checkout attributes");
   for (let n = 0; n < 650; n += 1) {
     writeFileSync(join(root, `change-${n}-${"x".repeat(200)}.md`), "large diff");
   }
   unlinkSync(join(root, "Package.swift"));
   const large = commit("Large diff with a deleted Swift manifest");
   const output = join(root, ".git", "output");
-  const workflow = renderPublicCi(parse((config, files, sources) => {
+  const { lanes } = parse((config, files, sources) => {
     formalConfig(config, files, sources);
     files.add("scripts/build.sh");
     sources.set(".github/workflows/swift.yml", `${adapter}    steps:
@@ -374,7 +378,8 @@ test("planner handles scoped changes, moves, large diffs and an unknown baseline
       - working-directory: scripts
         run: ./build.sh
 `);
-  }).lanes);
+  });
+  const workflow = renderPublicCi(lanes);
   const planner = shellScript(workflow, 1);
   const envFrom = (key) => new RegExp(`^ +${key}: '([^']+)'$`, "mu").exec(workflow)[1];
   const plan = (before, after, expectedSwift, expectedFormal = false) => {
@@ -386,7 +391,7 @@ test("planner handles scoped changes, moves, large diffs and an unknown baseline
         ...process.env,
         BASE_SHA: before, HEAD_SHA: after, GITHUB_OUTPUT: output,
         LANE_PATHS: envFrom("LANE_PATHS"), SHARED_PATHS: envFrom("SHARED_PATHS"),
-        FORMAL_BUILD_INPUT: envFrom("FORMAL_BUILD_INPUT"),
+        CHECKOUT_ATTRIBUTES: envFrom("CHECKOUT_ATTRIBUTES"), FORMAL_BUILD_INPUT: envFrom("FORMAL_BUILD_INPUT"),
       },
     });
     assert.equal(result.status, 0, result.stderr);
@@ -405,7 +410,15 @@ test("planner handles scoped changes, moves, large diffs and an unknown baseline
   plan(buildInput, common, false, true);
   plan(buildInput, shellInput, true, true);
   plan(shellInput, buildInput, true, true);
-  plan(shellInput, large, true);
+  plan(shellInput, rootAttributes, true, true);
+  plan(rootAttributes, nestedAttributes, true, true);
+  plan(nestedAttributes, rootAttributes, true, true);
+  plan(nestedAttributes, large, true);
+  for (const lane of describeCiLanes(lanes).filter(({ scoped }) => scoped)) {
+    assert.equal(lane.inputsChanged([".gitattributes"]), true, lane.name);
+    assert.equal(lane.inputsChanged(["packages/.gitattributes"]), true, lane.name);
+    assert.equal(lane.inputsChanged(["docs/.gitattributes.md"]), false, lane.name);
+  }
   plan(common, common, true, true);
   plan("", docs, true, true);
   plan("0".repeat(40), docs, true, true);
@@ -536,7 +549,8 @@ test("planner diffs a pull request against its test merge's first parent", (t) =
       cwd: root, encoding: "utf8",
       env: {
         ...process.env, HEAD_SHA: merge, GITHUB_OUTPUT: output,
-        LANE_PATHS: envFrom("LANE_PATHS"), SHARED_PATHS: envFrom("SHARED_PATHS"), FORMAL_BUILD_INPUT: envFrom("FORMAL_BUILD_INPUT"),
+        LANE_PATHS: envFrom("LANE_PATHS"), SHARED_PATHS: envFrom("SHARED_PATHS"),
+        CHECKOUT_ATTRIBUTES: envFrom("CHECKOUT_ATTRIBUTES"), FORMAL_BUILD_INPUT: envFrom("FORMAL_BUILD_INPUT"),
         ...env,
       },
     });
