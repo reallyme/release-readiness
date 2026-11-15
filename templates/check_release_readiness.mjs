@@ -30,7 +30,7 @@ const repositoryPolicy = {
   generatedFreshnessMode,
   releasePackage: {
     scriptPath: "scripts/check_release_readiness.mjs",
-    version: "0.9.1",
+    version: "0.9.2",
   },
   workflowActions: {},
   nodeWorkflows: { nodeVersion: "26" },

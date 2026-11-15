@@ -54,8 +54,8 @@ allow = [
 if (packageJson.version !== RELEASE_READINESS_VERSION) {
   fail("package version must match the shared core release version");
 }
-if (RELEASE_READINESS_VERSION !== "0.9.1") {
-  fail("package version must remain 0.9.1 for this release");
+if (RELEASE_READINESS_VERSION !== "0.9.2") {
+  fail("package version must remain 0.9.2 for this release");
 }
 if (
   JSON.stringify(packageJson.files) !==
@@ -81,7 +81,7 @@ for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]
   }
 }
 
-assertContains("core.mjs", 'RELEASE_READINESS_VERSION = "0.9.1"');
+assertContains("core.mjs", 'RELEASE_READINESS_VERSION = "0.9.2"');
 assertNotContains("core.mjs", "RELEASE_READINESS_CORE_CONTRACT_VERSION");
 assertContains("package.json", '"reallyme-release-readiness": "scripts/run-consumer-check.mjs"');
 assertContains("scripts/run-consumer-check.mjs", "RELEASE_READINESS_CORE_URL");
@@ -229,7 +229,7 @@ assertContains("README.md", "buf generate");
 assertContains("README.md", "ReallyMe Buffa generator");
 assertContains("README.md", "actions/workflows/ci.yml/badge.svg");
 assertContains("README.md", "docs/public-ci.md");
-assertContains("README.md", 'RELEASE_READINESS_VERSION = "0.9.1"');
+assertContains("README.md", 'RELEASE_READINESS_VERSION = "0.9.2"');
 assertContains("README.md", "repository: reallyme/release-readiness");
 assertContains("README.md", "ref: FULL_RELEASE_READINESS_COMMIT_SHA");
 assertContains("README.md", "persist-credentials: false");
@@ -258,7 +258,7 @@ for (const needle of [
   "rustRelease: {",
   "reallyMeLatestStableDependencies: true",
   "rustSource: {",
-  'version: "0.9.1"',
+  'version: "0.9.2"',
   "repositoryShape: {",
   'archetype: "protocol-engine"',
   "typescriptSource: {",

@@ -11,8 +11,9 @@ const stableVersion = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u;
 const workflowFile = /^[a-z0-9][a-z0-9_-]*\.ya?ml$/u;
 const manifestFile = /^(?:[a-zA-Z0-9_-][a-zA-Z0-9_.-]*\/)*[a-zA-Z0-9_-][a-zA-Z0-9_.-]*$/u;
 const shaPattern = /^[0-9a-f]{40}$/u;
-const packageWorkflowName = /^(crates|npm|swift|kotlin-android)-(?:package-)?(preflight|release)\.ya?ml$/u;
+const packageWorkflowName = /^(crates|npm|swift|kotlin-android|maven(?:-central)?)-(?:package-)?(preflight|release)\.ya?ml$/u;
 const standaloneReleaseName = /^(?:release(?:-[a-z0-9_-]+)?|[a-z0-9_-]+-release(?:-[a-z0-9_-]+)?)\.ya?ml$/u;
+const mavenBundleEntry = "scripts/maven-central-bundle.local.sh";
 const receiptPrefix = "release-readiness-ci-";
 const receiptFile = "release-readiness-ci.json";
 const receiptName = /^release-readiness-ci-([1-9][0-9]*)-([1-9][0-9]*)$/u;
@@ -147,16 +148,31 @@ export function readPublicRelease(context, trackedFiles, config, ciWorkflows) {
         fail(`public ${name} release must identify distinct tracked ${requiredManifest} files`);
       }
     }
+    if (name === "maven") assertMavenBundleEntry(context, trackedFiles);
     channels.set(name, channel);
   }
   for (const [file, [, ecosystem, phase]] of packageWorkflows) {
-    const channel = channels.get(ecosystem === "kotlin-android" ? "maven" : ecosystem);
+    const maven = ["kotlin-android", "maven", "maven-central"].includes(ecosystem);
+    const channel = channels.get(maven ? "maven" : ecosystem);
     if (channel?.[phase === "release" ? "publish" : phase] !== file) {
       fail(`every tracked package preflight and publish workflow must belong to its release ecosystem: ${file}`);
     }
   }
   if (otherWorkflows.size > 0) context.fail(`declare standalone release workflows in otherReleases: ${[...otherWorkflows].join(", ")}`);
   return { channels, tagOwner, tagPrefix: release.tagPrefix };
+}
+
+function assertMavenBundleEntry(context, trackedFiles) {
+  const requirement = `public Maven release requires a tracked, executable ${mavenBundleEntry}`;
+  if (!trackedFiles.has(mavenBundleEntry)) context.fail(requirement);
+  const source = context.readText(mavenBundleEntry);
+  const index = context.run("git", ["ls-files", "--stage", "-z", "--", mavenBundleEntry], { capture: true });
+  // The Git mode governs fresh checkouts, including checks run with filemode disabled.
+  const entry = /^100755 [a-f0-9]{40}(?:[a-f0-9]{24})? 0\t([^\0]+)\0$/u.exec(index.stdout)?.[1];
+  if (entry !== mavenBundleEntry ||
+      !/^#![^\r\n]+\r?\n/u.test(source) || source.slice(source.indexOf("\n") + 1).trim().length === 0) {
+    context.fail(requirement);
+  }
 }
 
 function assertGatedReleaseWorkflow(context, path, step, purpose, channel) {

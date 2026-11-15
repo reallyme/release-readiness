@@ -4804,7 +4804,7 @@ test("local checker template is syntactically valid and fails closed by construc
   assert.match(template, /assertReallyMeRustProtoRepositoryPolicy/u);
   assert.match(template, /assertNoTemplateMarkers\(repositoryPolicy\)/u);
   assert.match(template, /validatePublishablePathDependencies: true/u);
-  assert.match(template, /version: "0\.9\.1"/u);
+  assert.match(template, /version: "0\.9\.2"/u);
   assert.match(template, /versionFromWorkflowEnv: true/u);
   assert.match(template, /installBufAction: "bufbuild\/buf-action"/u);
   assert.match(template, /REPLACE_SECRET_BYTE_FIELD/u);
@@ -4815,7 +4815,7 @@ test("vendored core policy rejects assertions hidden in strings", () => {
   const root = createTrackedFixture();
   writeFileSync(
     join(root, "scripts", "release-readiness", "core.mjs"),
-    `export const RELEASE_READINESS_VERSION = "0.9.1";
+    `export const RELEASE_READINESS_VERSION = "0.9.2";
 const assertReallyMeVendoredCorePolicy = () => {
   "assertGeneratedArtifactsFresh";
   "assertGeneratedProtoHardeningPolicy";

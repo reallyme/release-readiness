@@ -26,6 +26,8 @@ const publicCiPath = fileURLToPath(new URL("../scripts/public-ci.mjs", import.me
 const publicReleasePath = fileURLToPath(new URL("../scripts/public-release.mjs", import.meta.url));
 const claTemplate = readFileSync(new URL("../templates/cla.yaml", import.meta.url), "utf8");
 const claPath = ".github/workflows/cla.yaml";
+const mavenBundlePath = "scripts/maven-central-bundle.local.sh";
+const mavenBundleFixture = "#!/usr/bin/env bash\nexit 0\n";
 
 const createConsumer = () => {
   const root = mkdtempSync(join(tmpdir(), "reallyme-release-runner-"));
@@ -357,6 +359,7 @@ test("release command binds versions, workflow identity and GitHub preflight evi
   writeFileSync(join(root, claPath), claTemplate);
   writeFileSync(join(root, "package.json"), JSON.stringify({ name: "example", version }));
   writeFileSync(join(root, "build.gradle.kts"), `version = "${version}"\n`);
+  writeFileSync(join(root, mavenBundlePath), mavenBundleFixture, { mode: 0o755 });
   writeFileSync(join(root, ".github/workflows/android.yml"), `${reusableHeader("verify")}jobs:
   verify:
     runs-on: ubuntu-24.04
@@ -483,6 +486,61 @@ process.stdout.write(JSON.stringify([page]));
   const dirty = check("publish");
   assert.equal(dirty.status, 1);
   assert.match(dirty.stderr, /unchanged tracked inputs/u);
+});
+
+test("a public Maven publisher needs a tracked executable bundle entry point even for JVM-only packages", (t) => {
+  const root = createConsumer();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, ".github/workflows"), { recursive: true });
+  writeFileSync(join(root, claPath), claTemplate);
+  writeFileSync(join(root, "build.gradle.kts"), 'version = "1.2.3"\n');
+  writeFileSync(join(root, mavenBundlePath), mavenBundleFixture, { mode: 0o755 });
+  const preflight = "maven-central-package-preflight.yml";
+  const publish = "maven-central-package-release.yml";
+  writeFileSync(join(root, ".github/workflows", preflight), releaseWorkflow("maven", "preflight"));
+  writeFileSync(join(root, ".github/workflows", publish), releaseWorkflow("maven", "publish"));
+  stageFiles(root, ".");
+  const release = {
+    tagPrefix: "v",
+    maven: { preflight, publish, manifests: ["build.gradle.kts"], artifacts: ["maven"] },
+  };
+  installStandardCi(root, {}, release);
+  const check = () => runConsumer(root, runnerPath, { RELEASE_READINESS_PUBLIC_REPO: "true" }, ["--check-workflows"]);
+  const accept = () => {
+    const result = check();
+    assert.equal(result.status, 0, result.stderr);
+  };
+  const reject = (diagnostic = /Maven release requires a tracked, executable scripts\/maven-central-bundle\.local\.sh/u) => {
+    const result = check();
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, diagnostic);
+  };
+  const index = (...args) => {
+    const result = spawnSync("git", [...args, "--", mavenBundlePath], { cwd: root, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  };
+  accept();
+  index("rm", "--cached");
+  reject();
+  stageFiles(root, mavenBundlePath);
+  index("update-index", "--chmod=-x");
+  reject();
+  index("update-index", "--chmod=+x");
+  writeFileSync(join(root, mavenBundlePath), "#!/usr/bin/env bash\n");
+  reject();
+  unlinkSync(join(root, mavenBundlePath));
+  symlinkSync("check_release_readiness.mjs", join(root, mavenBundlePath));
+  stageFiles(root, mavenBundlePath);
+  reject(/must not be a symbolic link/u);
+  unlinkSync(join(root, mavenBundlePath));
+  writeFileSync(join(root, mavenBundlePath), mavenBundleFixture, { mode: 0o755 });
+  stageFiles(root, mavenBundlePath);
+  accept();
+
+  writeFileSync(join(root, ".github/release-readiness.json"), JSON.stringify({
+    schema: 1, lanes: { policy: { workflow: "policy.yml" } },
+  }));
+  reject(/package workflows must declare their release ecosystems/u);
 });
 
 test("public policy checks release dependencies, artifact promotion, tag ownership and the pinned policy lane", (t) => {
@@ -640,7 +698,7 @@ test("runner supplies its immutable package core to the consumer", () => {
     `const coreUrl = process.env.RELEASE_READINESS_CORE_URL;
 if (typeof coreUrl !== "string") process.exit(2);
 const { RELEASE_READINESS_VERSION } = await import(coreUrl);
-if (RELEASE_READINESS_VERSION !== "0.9.1") process.exit(3);
+if (RELEASE_READINESS_VERSION !== "0.9.2") process.exit(3);
 `,
   );
   const result = runConsumer(root);

@@ -275,24 +275,6 @@ forward the verified publication. Publish signs and promotes those versioned
 files. Both steps reuse the AAR and skip native compilation and emulator
 tests. [GitHub artifact download inputs](https://github.com/actions/download-artifact/blob/9000827ccba6bdab643e8b6fd33ac0654aef8333/action.yml)
 
-### Local Maven Central bundle
-
-Repos that publish an Android AAR to Maven Central should provide an executable
-`./scripts/maven-central-bundle.local.sh`. Keep that entry point consistent
-while each repo owns its staging and signing implementation.
-
-Use the version and source SHA approved by Maven preflight. Reuse the tested
-AAR and any JVM publications already staged by preflight. If the local
-bundle needs to build JNI libraries, honor `ANDROID_NDK_HOME` or
-`ANDROID_NDK_VERSION` when supplied. Otherwise use the SDK manager to
-resolve the latest stable NDK and report the selected revision.
-
-Clean only the staging directories owned by the bundle command. Keep
-previously generated ZIPs and unrelated build output. Assemble a versioned
-ZIP in Maven repository layout with the required metadata, checksums, and
-detached signatures. Verify the signatures and print the ZIP path for the
-person uploading it in Central Portal. [Central Portal bundle format](https://central.sonatype.org/publish/publish-portal-upload/)
-
 ## Formal verification
 
 Add a `formal` lane as part of merging a repository's formal-methods work.
@@ -525,6 +507,38 @@ Grant the download job `actions: read`. Publish the downloaded bytes after the
 repository's signature, manifest or other package checks pass. GitHub's
 artifact digest covers the downloaded archive. Preserve any additional
 package-level digest or attestation required by the registry or repository.
+
+### Local Maven Central bundle
+
+Every repository declaring a Maven release channel must track an executable
+`./scripts/maven-central-bundle.local.sh`. This applies to JVM publications
+and Android AARs. Start a new helper with the [bundle template](../templates/maven-central-bundle.local.sh).
+
+Provide a tracked, executable
+`scripts/stage-maven-central-bundle.sh VERSION SOURCE_SHA REPOSITORY_DIR`
+when adopting the template. The staging script qualifies the exact version
+and source SHA against successful Maven preflight evidence. It stages the
+unsigned files in Maven repository layout in the absolute directory it
+receives. It can use the same repository-specific verification and download
+logic as the Maven publish workflow. Reuse the tested AAR and any JVM
+publications already staged by preflight. For local JNI builds, honor
+`ANDROID_NDK_HOME` or `ANDROID_NDK_VERSION` when supplied. Otherwise use the
+SDK manager to resolve the latest stable NDK and report the selected revision.
+
+Load the local GPG signing key ID and passphrase through
+`MAVEN_SIGNING_KEY_ID` and `MAVEN_SIGNING_PASSWORD`, then run the bundle helper
+with the preflight version and full source SHA.
+
+```sh
+./scripts/maven-central-bundle.local.sh "$RELEASE_VERSION" "$SOURCE_SHA"
+```
+
+The template signs in isolated staging, verifies every detached signature,
+and writes checksums before assembling the ZIP. It keeps previous ZIPs and
+uses a numbered filename for same-version reruns. It prints the completed
+ZIP path for upload through Central Portal. An existing repository helper
+can keep its own staging interface and should preserve these properties.
+[Central Portal bundle format](https://central.sonatype.org/publish/publish-portal-upload/)
 
 ### Release sequence and retries
 
