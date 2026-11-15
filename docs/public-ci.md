@@ -154,6 +154,19 @@ RELEASE_READINESS_PUBLIC_REPO=true node .release-readiness/scripts/run-consumer-
 actionlint
 ```
 
+Run the policy check from the candidate merge checkout when the rollout lands
+alongside another branch. The combined tree can introduce requirements such as
+a formal lane for newly tracked Kani harnesses.
+
+Rehearse the consumer's tooling tests with the GitHub Actions environment they
+will inherit. Include a public push event payload and its matching
+`GITHUB_REPOSITORY` with `GITHUB_ACTIONS=true`. When a test invokes the pinned
+runner in a scratch checkout, give its child process its own matching event
+data or clear `GITHUB_ACTIONS`, `GITHUB_EVENT_PATH`, and `GITHUB_REPOSITORY` for
+local-mode fixtures. Give local publisher fixtures only the environment they
+need so they exercise their intended path without inheriting live release
+inputs or credentials.
+
 ## Android runtime
 
 Use the [Android runtime workflow](../templates/android-runtime.yml) for the
@@ -171,6 +184,10 @@ The template uses three tracked repository scripts.
   repository.
 - `scripts/prepare-android-runtime.sh APK_PATH AVD_NAME MAVEN_REPOSITORY` creates
   the AVD in `ANDROID_AVD_HOME` and builds the minified consumer APK before boot.
+  Use `avdmanager create avd --device "$ANDROID_AVD_DEVICE"` with the
+  repository's system image. The template supplies `pixel` for 16 KiB runtime
+  checks. Preserve an existing verified profile when migrating a different
+  image, along with the tested SDK tools and emulator launch options.
   Resolve the repo's own Maven coordinates exclusively from the staged
   repository. The consumer's build must use the published dependency and its
   consumer rules as a downstream repo would.
@@ -196,20 +213,26 @@ for the first probe that still fails. It checks the ADB transport, Android boot
 property, system-user unlock, package and mount service registration, package
 lookup, and writable internal storage. The service checks require the exact
 positive response because `service check` can return success with `not found`.
+The template gives each cold boot up to 420 seconds across all probes. It
+proceeds as soon as the device is ready. When migrating a gate with a larger
+tested cold-boot allowance, preserve it within the helper's 600-second limit
+and account for it in the job timeout.
 
 ```sh
 ADB="$ANDROID_HOME/platform-tools/adb" \
-  node .release-readiness/scripts/android-runtime.mjs wait "$ANDROID_SERIAL"
+  node .release-readiness/scripts/android-runtime.mjs wait "$ANDROID_SERIAL" 420
 ADB="$ANDROID_HOME/platform-tools/adb" \
   node .release-readiness/scripts/android-runtime.mjs install "$ANDROID_SERIAL" "$APK_PATH"
 ```
 
 Exit code `75` identifies a readiness timeout or the package service's
-`Broken pipe` during installation. The template captures bounded guest logs
-before teardown and restarts the emulator once on that result with the same
-APK. It clears only the main log buffer before the test so the system, events,
-and crash buffers remain available on failure. An APK rejection or runtime
-assertion failure keeps its original exit status. The `wait` command accepts a
+`Broken pipe` during installation. The template can restart the emulator once
+after a cold-boot timeout. After an install disconnect, it waits five seconds,
+rechecks readiness for up to 60 seconds, and retries the same APK on the same
+device. Installation gets at most three attempts. The workflow captures guest
+logs before teardown and clears only the main log buffer before testing.
+An APK rejection or runtime assertion failure keeps its original exit status.
+The `wait` command accepts a
 deadline in seconds after the serial, and `diagnostics DEVICE_SERIAL` can
 collect guest logs from a local test device. [Android Debug Bridge](https://developer.android.com/tools/adb#devicestatus) · [Android log buffers](https://developer.android.com/tools/logcat)
 
@@ -422,6 +445,36 @@ preflight. It accepts fixed names and the `{version}` and `{sha}` placeholders.
 Upload the package bytes and any evidence the publisher needs to verify them.
 For example, upload the tested npm tarball or the reviewed crate archives and
 their attestation. Keep existing signature, manifest and package checks.
+
+Add the same release-input summary step to every crates.io, npm, Swift, and
+Maven preflight. Generate it from a checkout of the repository adopting the
+workflow.
+
+```sh
+node .release-readiness/scripts/run-consumer-check.mjs --render-preflight-summary
+```
+
+Paste the generated step after the package or attestation upload in an
+existing preflight job. The step writes the version and full source SHA as
+separate copyable values in the Actions summary. Copy the values once the
+preflight run succeeds. The step uses the existing dispatch inputs and
+requires no additional checkout or job.
+
+Use this dispatch input wording for every corresponding publish workflow.
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version from the successful package preflight
+        required: true
+        type: string
+      source_sha:
+        description: Copy the full source SHA from this ecosystem's successful package preflight summary
+        required: true
+        type: string
+```
 
 Publish calls `--check-release swift publish` with the same version, tag and
 SHA. It confirms the SHA is still on `main` and selects a successful

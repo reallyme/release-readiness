@@ -241,6 +241,65 @@ test("workflow-only check catches CI drift before running a consumer checker", (
   assert.match(duplicate.stderr, /ci\.yaml must not exist/u);
 });
 
+test("the preflight summary step reports copyable inputs for an exact main dispatch", (t) => {
+  const root = createConsumer();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const render = (args) => runConsumer(root, runnerPath, {}, ["--render-preflight-summary", ...args]);
+  const rendered = render([]);
+  assert.equal(rendered.status, 0, rendered.stderr);
+  assert.match(rendered.stdout, /RELEASE_VERSION: \$\{\{ inputs\.version \}\}/u);
+  assert.match(rendered.stdout, /SOURCE_SHA: \$\{\{ inputs\.source_sha \}\}/u);
+  const extraArgument = render(["crates"]);
+  assert.equal(extraArgument.status, 1);
+  assert.match(extraArgument.stderr, /must be used on its own/u);
+
+  const [header, body] = rendered.stdout.split("  run: |\n");
+  assert.ok(body);
+  const patterns = Object.fromEntries(
+    [...header.matchAll(/^ {4}((?:VERSION|SHA)_PATTERN): '([^']+)'$/gmu)]
+      .map(([, name, pattern]) => [name, pattern]),
+  );
+  const shell = body.replace(/^ {4}/gmu, "");
+  const summary = join(root, "step summary.md");
+  const sha = "a".repeat(40);
+  const execute = (overrides = {}) => spawnSync("bash", ["-e", "-o", "pipefail", "-c", shell], {
+    encoding: "utf8",
+    env: {
+      ...process.env, ...patterns, RELEASE_VERSION: "0.4.3", SOURCE_SHA: sha,
+      GITHUB_SHA: sha, GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_REF: "refs/heads/main",
+      GITHUB_STEP_SUMMARY: summary, ...overrides,
+    },
+  });
+  writeFileSync(summary, "Existing summary\n\n");
+  const success = execute();
+  assert.equal(success.status, 0, success.stderr);
+  assert.equal(success.stderr, "");
+  const fence = "```";
+  const content = [
+    "Existing summary", "", "## Release form inputs", "",
+    "Copy these values into the release form for this ecosystem once the preflight run succeeds.", "",
+    "**Version**", `${fence}text`, "0.4.3", fence, "",
+    "**Source SHA**", `${fence}text`, sha, fence, "",
+  ].join("\n");
+  assert.equal(readFileSync(summary, "utf8"), content);
+
+  for (const overrides of [
+    { GITHUB_EVENT_NAME: "push" },
+    { GITHUB_REF: "refs/heads/topic" },
+    { GITHUB_SHA: "b".repeat(40) },
+    { SOURCE_SHA: "aaa", GITHUB_SHA: "aaa" },
+    { RELEASE_VERSION: "0.04.3" },
+    { RELEASE_VERSION: "0.4.3\nadditional text" },
+    { GITHUB_STEP_SUMMARY: "" },
+    { GITHUB_STEP_SUMMARY: root },
+  ]) {
+    const result = execute(overrides);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /::warning::/u);
+    assert.equal(readFileSync(summary, "utf8"), content);
+  }
+});
+
 test("the pinned runner gives protobuf policy the verified coverage of a reusable lane", (t) => {
   const root = createConsumer();
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -581,7 +640,7 @@ test("runner supplies its immutable package core to the consumer", () => {
     `const coreUrl = process.env.RELEASE_READINESS_CORE_URL;
 if (typeof coreUrl !== "string") process.exit(2);
 const { RELEASE_READINESS_VERSION } = await import(coreUrl);
-if (RELEASE_READINESS_VERSION !== "0.9.0") process.exit(3);
+if (RELEASE_READINESS_VERSION !== "0.9.1") process.exit(3);
 `,
   );
   const result = runConsumer(root);

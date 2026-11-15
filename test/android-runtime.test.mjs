@@ -60,6 +60,19 @@ test("Android readiness selects one device and succeeds only after transport and
   assert.equal(calls.at(-1).command, "shell sm list-volumes private");
 });
 
+test("the CI cold-boot allowance can recover after the local readiness deadline", async () => {
+  const delayedTransport = () => fixture(new Map([
+    // ADB first discovers the cold emulator after the 120-second local deadline.
+    ["get-state", Array(61).fill(adbResult("offline\n"))],
+  ]));
+  assert.deepEqual(await waitForAndroidRuntime({ ...options, waitSeconds: 120 }, delayedTransport().dependencies), {
+    kind: "timeout", stage: "ADB transport", reason: "reported not ready",
+  });
+  assert.deepEqual(await waitForAndroidRuntime({ ...options, waitSeconds: 420 }, delayedTransport().dependencies), {
+    kind: "ready",
+  });
+});
+
 test("Android readiness distinguishes storage timeout from successful Android boot", async () => {
   for (const response of [
     "public:1 mounted FAT\nprivate unmounted null\n",
@@ -220,11 +233,14 @@ test("Android publication verifies the exact staged files and source SHA", async
   assert.equal(await verify(), "invalid-publication");
 });
 
-test("Android runtime workflow collects diagnostics before teardown and retries only the emulator setup", async (t) => {
+test("Android runtime workflow separates cold restarts from same-device install recovery", async (t) => {
   const template = readFileSync(new URL("../templates/android-runtime.yml", import.meta.url), "utf8");
   const runtime = template.split("        run: |\n").at(-1)
     .split("\n      - name: Upload tested Android publication")[0].replace(/^ {10}/gmu, "");
   assert.match(runtime, /android-runtime\.mjs/u);
+  assert.match(runtime, /^readonly readiness_wait_seconds=420$/mu);
+  assert.match(runtime, /node "\$helper" wait "\$ANDROID_SERIAL" "\$readiness_wait_seconds"/u);
+  assert.match(template, /- name: Prepare Android consumer and emulator\n(?:[^\n]*\n)*? {10}ANDROID_AVD_DEVICE: pixel\n/u);
   assert.ok(template.indexOf("seal-publication") < template.indexOf("bash -e -o pipefail scripts/prepare-android-runtime.sh"));
   // Only successful main runs may write the cache that release builds restore.
   assert.ok(template.indexOf("actions/cache/restore@") < template.indexOf("scripts/stage-android-publication.sh"));
@@ -255,6 +271,25 @@ test("Android runtime workflow collects diagnostics before teardown and retries 
     const executable = (file, body) => writeFileSync(join(root, file), `#!/bin/sh\nset -eu\n${body}\n`, { mode: 0o755 });
     executable("bin/git", 'printf "%s\\n" "$GITHUB_SHA"');
     executable("bin/timeout", 'shift 2\nexec "$@"');
+    executable("bin/node", `
+      if [ "$2" = wait ]; then
+        while [ ! -e "$RUNNER_TEMP/emulator-running" ]; do sleep 0.02; done
+        printf 'wait:%s\\n' "$4" >>"$EVENTS"
+        if [ "$SCENARIO" = boot-retry ] && [ ! -e "$RUNNER_TEMP/boot-attempted" ]; then
+          : >"$RUNNER_TEMP/boot-attempted"
+          exit 75
+        fi
+        if [ "$SCENARIO" = recovery-timeout ] && [ "$4" = 60 ]; then exit 75; fi
+      fi
+      exec "$FIXTURE_NODE_PATH" "$@"
+    `);
+    executable("bin/sleep", `
+      if [ "$#" -eq 1 ] && [ "$1" = 5 ]; then
+        printf 'install-pause\\n' >>"$EVENTS"
+        exit 0
+      fi
+      exec /bin/sleep "$@"
+    `);
     executable("sdk/emulator/emulator", `
       printf 'emulator-start\\n' >>"$EVENTS"
       trap 'rm -f "$RUNNER_TEMP/emulator-running"; printf "emulator-stop\\n" >>"$EVENTS"; exit 0' TERM
@@ -286,7 +321,8 @@ test("Android runtime workflow collects diagnostics before teardown and retries 
           test "$4" = "$APK_PATH"
           test "$(cat "$4")" = 'same release APK'
           printf 'install\\n' >>"$EVENTS"
-          if [ "$SCENARIO" = startup-failed ] || { [ "$SCENARIO" = startup-retry ] && [ ! -e "$RUNNER_TEMP/attempted" ]; }; then
+          if [ "$SCENARIO" = install-failed ] || [ "$SCENARIO" = recovery-timeout ] ||
+             { [ "$SCENARIO" = install-retry ] && [ ! -e "$RUNNER_TEMP/attempted" ]; }; then
             : >"$RUNNER_TEMP/attempted"
             echo 'cmd: Failure calling service package: Broken pipe (32)' >&2
             exit 1
@@ -313,31 +349,47 @@ test("Android runtime workflow collects diagnostics before teardown and retries 
     const result = spawnSync("bash", ["-eo", "pipefail", "-c", runtime], {
       cwd: root, encoding: "utf8", timeout: 60_000,
       env: {
-        ...process.env, PATH: `${join(root, "bin")}:${process.env.PATH}`, EVENTS: eventsPath,
+        ...process.env, PATH: `${join(root, "bin")}:${process.env.PATH}`, EVENTS: eventsPath, FIXTURE_NODE_PATH: process.execPath,
         ANDROID_HOME: join(root, "sdk"), ANDROID_SERIAL: "emulator-5554", ANDROID_AVD_NAME: "reallyme-runtime",
         APK_PATH: apk, MAVEN_REPOSITORY: repository, RUNNER_TEMP: root, GITHUB_SHA: sha, GITHUB_OUTPUT: output, SCENARIO: scenario,
       },
     });
     return { result, events: readFileSync(eventsPath, "utf8").trim().split("\n"), output: readFileSync(output, "utf8") };
   };
-  const success = await run("startup-retry");
+  const success = await run("install-retry");
   assert.equal(success.result.status, 0, success.result.stderr);
-  assert.deepEqual(success.events, ["emulator-start", "install", "guest-diagnostics", "emulator-stop", "emulator-start", "install", "clear-main", "runtime-test", "emulator-stop"]);
+  assert.deepEqual(success.events, [
+    "emulator-start", "wait:420", "install", "install-pause", "wait:60", "install",
+    "clear-main", "runtime-test", "emulator-stop",
+  ]);
   assert.equal(success.output, `sha=${sha}\n`);
-  const exhausted = await run("startup-failed");
+  const bootRetry = await run("boot-retry");
+  assert.equal(bootRetry.result.status, 0, bootRetry.result.stderr);
+  assert.deepEqual(bootRetry.events, [
+    "emulator-start", "wait:420", "guest-diagnostics", "emulator-stop",
+    "emulator-start", "wait:420", "install", "clear-main", "runtime-test", "emulator-stop",
+  ]);
+  assert.equal(bootRetry.output, `sha=${sha}\n`);
+  const exhausted = await run("install-failed");
   assert.equal(exhausted.result.status, 75, exhausted.result.stderr);
   assert.deepEqual(exhausted.events, [
-    "emulator-start", "install", "guest-diagnostics", "emulator-stop",
-    "emulator-start", "install", "guest-diagnostics", "emulator-stop",
+    "emulator-start", "wait:420", "install", "install-pause", "wait:60", "install",
+    "install-pause", "wait:60", "install", "guest-diagnostics", "emulator-stop",
   ]);
   assert.equal(exhausted.output, "");
+  const recoveryTimeout = await run("recovery-timeout");
+  assert.equal(recoveryTimeout.result.status, 75, recoveryTimeout.result.stderr);
+  assert.deepEqual(recoveryTimeout.events, [
+    "emulator-start", "wait:420", "install", "install-pause", "wait:60", "guest-diagnostics", "emulator-stop",
+  ]);
+  assert.equal(recoveryTimeout.output, "");
   const rejected = await run("invalid-apk");
   assert.equal(rejected.result.status, 1, rejected.result.stderr);
-  assert.deepEqual(rejected.events, ["emulator-start", "install", "guest-diagnostics", "emulator-stop"]);
+  assert.deepEqual(rejected.events, ["emulator-start", "wait:420", "install", "guest-diagnostics", "emulator-stop"]);
   assert.equal(rejected.output, "");
   const assertion = await run("assertion-failed");
   assert.equal(assertion.result.status, 19, assertion.result.stderr);
-  assert.deepEqual(assertion.events, ["emulator-start", "install", "clear-main", "runtime-test", "guest-diagnostics", "emulator-stop"]);
+  assert.deepEqual(assertion.events, ["emulator-start", "wait:420", "install", "clear-main", "runtime-test", "guest-diagnostics", "emulator-stop"]);
   assert.match(assertion.result.stderr, /could not be fully collected/u);
   assert.equal(assertion.output, "");
   const changed = await run("changed-publication");

@@ -75,6 +75,7 @@ jobs:
         env:
           ANDROID_AVD_HOME: ${{ runner.temp }}/android-avd
           ANDROID_AVD_NAME: reallyme-runtime
+          ANDROID_AVD_DEVICE: pixel
           APK_PATH: ${{ runner.temp }}/android-runtime.apk
           MAVEN_REPOSITORY: ${{ runner.temp }}/android-publication/repository
         run: |
@@ -95,6 +96,11 @@ jobs:
           test "$sha" = "$GITHUB_SHA"
           export ADB="${ANDROID_HOME:?}/platform-tools/adb"
           helper=.release-readiness/scripts/android-runtime.mjs
+          # The cold-boot deadline covers ADB discovery, boot, and system services.
+          readonly readiness_wait_seconds=420
+          readonly service_recovery_wait_seconds=60
+          readonly max_install_attempts=3
+          readonly install_retry_delay_seconds=5
           emulator_log="$RUNNER_TEMP/android-runtime-emulator.log"
           emulator_pid=
 
@@ -138,23 +144,40 @@ jobs:
               >"$emulator_log" 2>&1 &
             emulator_pid=$!
 
-            if node "$helper" wait "$ANDROID_SERIAL" && node "$helper" install "$ANDROID_SERIAL" "$APK_PATH"; then
-              # Preserve system, events and crash buffers for failure diagnostics.
-              timeout --kill-after=2s 10s "$ADB" -s "$ANDROID_SERIAL" logcat -b main -c
-              bash -e -o pipefail scripts/test-android-runtime.sh "$ANDROID_SERIAL"
-              node "$helper" verify-publication "$MAVEN_REPOSITORY" "$sha"
-              printf 'sha=%s\n' "$sha" >>"$GITHUB_OUTPUT"
+            if node "$helper" wait "$ANDROID_SERIAL" "$readiness_wait_seconds"; then
               break
             else
               result=$?
               if (( result != 75 || attempt == 2 )); then
                 exit "$result"
               fi
-              echo "Restarting the Android emulator after a device readiness or package-service failure." >&2
+              echo "Restarting the Android emulator after a cold-boot readiness timeout." >&2
               collect_diagnostics
               stop_emulator
             fi
           done
+
+          for ((attempt = 1; attempt <= max_install_attempts; attempt++)); do
+            if node "$helper" install "$ANDROID_SERIAL" "$APK_PATH"; then
+              break
+            else
+              result=$?
+              if (( result != 75 || attempt == max_install_attempts )); then
+                exit "$result"
+              fi
+            fi
+            # Wiping a ready emulator would repeat the same package-service
+            # startup race. Let the service recover on the current device.
+            echo "Rechecking Android package services before retrying APK installation." >&2
+            sleep "$install_retry_delay_seconds"
+            node "$helper" wait "$ANDROID_SERIAL" "$service_recovery_wait_seconds"
+          done
+
+          # Preserve system, events and crash buffers for failure diagnostics.
+          timeout --kill-after=2s 10s "$ADB" -s "$ANDROID_SERIAL" logcat -b main -c
+          bash -e -o pipefail scripts/test-android-runtime.sh "$ANDROID_SERIAL"
+          node "$helper" verify-publication "$MAVEN_REPOSITORY" "$sha"
+          printf 'sha=%s\n' "$sha" >>"$GITHUB_OUTPUT"
 
       # Release qualification accepts a main run or, with a merge queue, the
       # queue run that main fast-forwarded to. PR runs never qualify.

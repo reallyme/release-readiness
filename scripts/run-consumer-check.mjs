@@ -12,7 +12,8 @@ import { createReleaseReadinessContext, RELEASE_READINESS_VERSION } from "../cor
 import { readPublicCiConfig, renderPublicCi } from "./public-ci.mjs";
 import {
   assertOnMain, assertPublicCiRun, assertPublicPreflightDispatch, assertPublicPreflightRun,
-  assertPublicReleaseInvocation, assertPublicReleaseVersion, writePublicPreflightReceipt, writePublicReleaseOutputs,
+  assertPublicReleaseInvocation, assertPublicReleaseVersion, renderPreflightSummaryStep,
+  writePublicPreflightReceipt, writePublicReleaseOutputs,
 } from "./public-release.mjs";
 import { assertPublicRepoPolicy } from "./public-repo-policy.mjs";
 
@@ -20,7 +21,12 @@ const MAX_CHECKER_BYTES = 524_288;
 const MAX_SHARED_CORE_BYTES = 262_144;
 const MAX_TRACKED_FILES_BYTES = 16_777_216;
 const args = process.argv.slice(2);
-const commandArguments = new Map([["--check-workflows", 0], ["--render-ci", 0], ["--check-release", 5]]);
+const commandArguments = new Map([
+  ["--check-workflows", 0],
+  ["--render-ci", 0],
+  ["--render-preflight-summary", 0],
+  ["--check-release", 5],
+]);
 const workflowCommand = args.find((arg) => commandArguments.has(arg));
 
 const failure = (message) => {
@@ -90,7 +96,9 @@ if (workflowCommand !== undefined &&
     ? "use --check-release ECOSYSTEM PHASE VERSION TAG SOURCE_SHA"
     : `${workflowCommand} must be used on its own`);
 }
-if (workflowCommand === "--render-ci") {
+if (workflowCommand === "--render-preflight-summary") {
+  process.stdout.write(renderPreflightSummaryStep());
+} else if (workflowCommand === "--render-ci") {
   // Let stdout flush when a caller pipes the rendered file.
   const { lanes, mergeQueue } = readPublicCiConfig(repositoryContext, trackedFiles, { selfCheck });
   process.stdout.write(renderPublicCi(lanes, { mergeQueue }));

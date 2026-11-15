@@ -7,7 +7,7 @@ import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 
 const ecosystems = ["crates", "npm", "swift", "maven"];
-const stableVersion = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/u;
+const stableVersion = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u;
 const workflowFile = /^[a-z0-9][a-z0-9_-]*\.ya?ml$/u;
 const manifestFile = /^(?:[a-zA-Z0-9_-][a-zA-Z0-9_.-]*\/)*[a-zA-Z0-9_-][a-zA-Z0-9_.-]*$/u;
 const shaPattern = /^[0-9a-f]{40}$/u;
@@ -738,6 +738,37 @@ export function assertPublicCiRun(context, repository, sha, {
 
 export function publicPreflightTitle(ecosystem, version, sha) {
   return `Preflight ${ecosystem} ${version} ${sha}`;
+}
+
+export function renderPreflightSummaryStep() {
+  // Render a self-contained step so package jobs can report inputs without
+  // checking out the runner again. Keep both patterns compatible with Bash.
+  const fence = "```";
+  return `- name: Show release form inputs
+  shell: bash
+  env:
+    RELEASE_VERSION: \${{ inputs.version }}
+    SOURCE_SHA: \${{ inputs.source_sha }}
+    VERSION_PATTERN: '${stableVersion.source}'
+    SHA_PATTERN: '${shaPattern.source}'
+  run: |
+    if [[ "$GITHUB_EVENT_NAME" != workflow_dispatch || "$GITHUB_REF" != refs/heads/main ||
+          "$SOURCE_SHA" != "$GITHUB_SHA" || ! "$SOURCE_SHA" =~ $SHA_PATTERN ||
+          ! "$RELEASE_VERSION" =~ $VERSION_PATTERN ]]; then
+      echo "::warning::Cannot show release inputs without a matching preflight dispatch on main." >&2
+      exit 0
+    fi
+    if [[ -z "$GITHUB_STEP_SUMMARY" ]]; then
+      echo "::warning::GitHub Actions did not provide a job summary file." >&2
+      exit 0
+    fi
+    if ! printf '%s\\n' '## Release form inputs' '' \\
+        'Copy these values into the release form for this ecosystem once the preflight run succeeds.' '' \\
+        '**Version**' '${fence}text' "$RELEASE_VERSION" '${fence}' '' \\
+        '**Source SHA**' '${fence}text' "$SOURCE_SHA" '${fence}' >>"$GITHUB_STEP_SUMMARY"; then
+      echo "::warning::Could not write release inputs to the GitHub Actions summary." >&2
+    fi
+`;
 }
 
 export function findPublicPreflightRun(runs, repository, workflow, ecosystem, version, sha) {
