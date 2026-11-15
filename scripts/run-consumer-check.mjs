@@ -8,11 +8,20 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { RELEASE_READINESS_VERSION } from "../core.mjs";
+import { createReleaseReadinessContext, RELEASE_READINESS_VERSION } from "../core.mjs";
+import { readPublicCiConfig, renderPublicCi } from "./public-ci.mjs";
+import {
+  assertOnMain, assertPublicCiRun, assertPublicPreflightDispatch, assertPublicPreflightRun,
+  assertPublicReleaseInvocation, assertPublicReleaseVersion, writePublicPreflightReceipt, writePublicReleaseOutputs,
+} from "./public-release.mjs";
+import { assertPublicRepoPolicy } from "./public-repo-policy.mjs";
 
 const MAX_CHECKER_BYTES = 524_288;
 const MAX_SHARED_CORE_BYTES = 262_144;
 const MAX_TRACKED_FILES_BYTES = 16_777_216;
+const args = process.argv.slice(2);
+const commandArguments = new Map([["--check-workflows", 0], ["--render-ci", 0], ["--check-release", 5]]);
+const workflowCommand = args.find((arg) => commandArguments.has(arg));
 
 const failure = (message) => {
   console.error(`release readiness runner failed: ${message}`);
@@ -27,11 +36,9 @@ try {
   checkerPath = resolve(repositoryRoot, "scripts/check_release_readiness.mjs");
   upstreamCorePath = fileURLToPath(new URL("../core.mjs", import.meta.url));
 
-  for (const [description, path, maximumBytes] of [[
-    "consumer checker",
-    checkerPath,
-    MAX_CHECKER_BYTES,
-  ]]) {
+  if (workflowCommand === undefined) {
+    const description = "consumer checker";
+    const path = checkerPath;
     const repositoryRelativePath = relative(repositoryRoot, path);
     if (
       repositoryRelativePath === ".." ||
@@ -44,7 +51,7 @@ try {
     if (status.isSymbolicLink() || !status.isFile()) {
       failure(`${description} must be a regular file`);
     }
-    if (status.size === 0 || status.size > maximumBytes) {
+    if (status.size === 0 || status.size > MAX_CHECKER_BYTES) {
       failure(`${description} size is outside the accepted boundary`);
     }
   }
@@ -69,49 +76,105 @@ const trackedFilesResult = spawnSync("git", ["ls-files", "-z"], {
 if (trackedFilesResult.error !== undefined || trackedFilesResult.status !== 0) {
   failure("could not enumerate Git-tracked source files");
 }
-const trackedFiles = trackedFilesResult.stdout.split("\0").filter((path) => path.length !== 0);
-const requiredSourcePolicies = new Set();
-for (const path of trackedFiles) {
-  if (path.endsWith(".rs")) {
-    requiredSourcePolicies.add("rust");
-  } else if (/\.(?:cts|mts|tsx?|ts)$/u.test(path)) {
-    requiredSourcePolicies.add("typescript");
-  } else if (path.endsWith(".swift") && !/(?:^|\/)Package\.swift$/u.test(path)) {
-    requiredSourcePolicies.add("swift");
-  } else if (path.endsWith(".kt")) {
-    requiredSourcePolicies.add("kotlin");
-  }
-}
-
-const result = spawnSync(process.execPath, [checkerPath, ...process.argv.slice(2)], {
-  cwd: repositoryRoot,
-  env: {
-    ...process.env,
-    RELEASE_READINESS_CORE_URL: pathToFileURL(upstreamCorePath).href,
-    RELEASE_READINESS_ENFORCED_VERSION: RELEASE_READINESS_VERSION,
-    RELEASE_READINESS_SOURCE_POLICY_FD: "3",
-  },
-  stdio: ["inherit", "inherit", "inherit", "pipe"],
+const trackedFiles = new Set(trackedFilesResult.stdout.split("\0").filter(Boolean));
+const repositoryContext = createReleaseReadinessContext({
+  scriptUrl: pathToFileURL(checkerPath).href,
+  failurePrefix: "release readiness runner failed",
 });
-if (result.error !== undefined) {
-  failure("consumer checker could not be started");
+const selfCheck = relative(repositoryRoot, upstreamCorePath) === "core.mjs" &&
+  (process.env.GITHUB_ACTIONS !== "true" ||
+    process.env.GITHUB_REPOSITORY?.toLowerCase() === "reallyme/release-readiness");
+if (workflowCommand !== undefined &&
+    (args[0] !== workflowCommand || args.length !== commandArguments.get(workflowCommand) + 1)) {
+  failure(workflowCommand === "--check-release"
+    ? "use --check-release ECOSYSTEM PHASE VERSION TAG SOURCE_SHA"
+    : `${workflowCommand} must be used on its own`);
 }
-if (!Number.isInteger(result.status)) {
-  failure("consumer checker ended without a deterministic exit status");
-}
-if (result.status === 0) {
-  const reportedSourcePolicies = new Set(
-    (result.output[3]?.toString("utf8") ?? "")
-      .split("\n")
-      .filter((language) => language.length !== 0),
-  );
-  for (const language of requiredSourcePolicies) {
-    if (!reportedSourcePolicies.has(language)) {
-      failure(`consumer checker did not enforce the shared ${language} source policy`);
+if (workflowCommand === "--render-ci") {
+  // Let stdout flush when a caller pipes the rendered file.
+  const { lanes, mergeQueue } = readPublicCiConfig(repositoryContext, trackedFiles, { selfCheck });
+  process.stdout.write(renderPublicCi(lanes, { mergeQueue }));
+} else if (workflowCommand !== undefined) {
+  const policy = assertPublicRepoPolicy(repositoryContext, trackedFiles, process.env, { selfCheck });
+  if (policy === null) {
+    failure("set RELEASE_READINESS_PUBLIC_REPO=true to check the public workflow policy locally");
+  }
+  if (workflowCommand === "--check-release") {
+    const [, ecosystem, phase, version, tag, sha] = args;
+    const repository = process.env.GITHUB_REPOSITORY;
+    const workflowRef = process.env.GITHUB_ACTIONS === "true" ? process.env.GITHUB_WORKFLOW_REF ?? "" : undefined;
+    assertPublicReleaseInvocation(repositoryContext, repository, sha, ecosystem, phase, policy.release, workflowRef);
+    assertPublicReleaseVersion(repositoryContext, trackedFiles, policy.release, version, tag);
+    const { tagOwner } = policy.release;
+    if (phase === "preflight") {
+      assertPublicPreflightDispatch(repositoryContext, version, sha);
+      const ci = assertPublicCiRun(repositoryContext, repository, sha, {
+        mergeQueue: policy.mergeQueue, lanes: policy.ciLanes,
+        requireAndroidPublication: ecosystem === "maven" && policy.hasAndroidLane,
+      });
+      writePublicPreflightReceipt(repositoryContext, { repository, ecosystem, version, tag, sha }, ci);
+      writePublicReleaseOutputs(repositoryContext, { ...ci, preflightRunId: null, tagOwner });
+      console.log(`Verified repository version ${version} and Required CI run ${ci.ciRunId} for ${sha}. Canonical tag owner: ${tagOwner}.`);
+      for (const [lane, evidence] of ci.carriedLanes) {
+        console.log(`Lane ${lane} was skipped for ${sha}. It has unchanged inputs since CI run ${evidence.runId} passed it at ${evidence.sha}.`);
+      }
+    } else {
+      assertOnMain(repositoryContext, repository, sha);
+      const verified = assertPublicPreflightRun(repositoryContext, repository, policy.release, ecosystem, version, sha);
+      writePublicReleaseOutputs(repositoryContext, { ...verified, androidArtifactId: null, tagOwner });
+      console.log(`Verified package preflight run ${verified.preflightRunId} and its CI run ${verified.ciRunId} for ${version} at ${sha}.`);
     }
   }
-  if (trackedFiles.includes("Cargo.toml") && !reportedSourcePolicies.has("rust-release")) {
-    failure("consumer checker did not enforce the shared Rust release policy");
-  }
+} else {
+  const policy = assertPublicRepoPolicy(repositoryContext, trackedFiles, process.env, { selfCheck });
+  runConsumerChecker(policy?.coverage);
 }
-process.exit(result.status);
+
+function runConsumerChecker(standardCiPaths) {
+  const requiredSourcePolicies = new Set();
+  for (const path of trackedFiles) {
+    if (path.endsWith(".rs")) {
+      requiredSourcePolicies.add("rust");
+    } else if (/\.(?:cts|mts|tsx?|ts)$/u.test(path)) {
+      requiredSourcePolicies.add("typescript");
+    } else if (path.endsWith(".swift") && !/(?:^|\/)Package\.swift$/u.test(path)) {
+      requiredSourcePolicies.add("swift");
+    } else if (path.endsWith(".kt")) {
+      requiredSourcePolicies.add("kotlin");
+    }
+  }
+
+  const result = spawnSync(process.execPath, [checkerPath, ...args], {
+    cwd: repositoryRoot,
+    env: {
+      ...process.env,
+      RELEASE_READINESS_CORE_URL: pathToFileURL(upstreamCorePath).href,
+      RELEASE_READINESS_ENFORCED_VERSION: RELEASE_READINESS_VERSION,
+      RELEASE_READINESS_SOURCE_POLICY_FD: "3",
+      RELEASE_READINESS_STANDARD_CI_PATHS: JSON.stringify(Object.fromEntries(standardCiPaths ?? [])),
+    },
+    stdio: ["inherit", "inherit", "inherit", "pipe"],
+  });
+  if (result.error !== undefined) {
+    failure("consumer checker could not be started");
+  }
+  if (!Number.isInteger(result.status)) {
+    failure("consumer checker ended without a deterministic exit status");
+  }
+  if (result.status === 0) {
+    const reportedSourcePolicies = new Set(
+      (result.output[3]?.toString("utf8") ?? "")
+        .split("\n")
+        .filter((language) => language.length !== 0),
+    );
+    for (const language of requiredSourcePolicies) {
+      if (!reportedSourcePolicies.has(language)) {
+        failure(`consumer checker did not enforce the shared ${language} source policy`);
+      }
+    }
+    if (trackedFiles.has("Cargo.toml") && !reportedSourcePolicies.has("rust-release")) {
+      failure("consumer checker did not enforce the shared Rust release policy");
+    }
+  }
+  process.exitCode = result.status;
+}

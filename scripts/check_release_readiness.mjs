@@ -10,6 +10,7 @@ import {
 
 const {
   assertContains,
+  assertFormalVerificationWorkflow,
   assertNodeWorkflowJobsPinNode,
   assertNotContains,
   assertRepositoryShapePolicy,
@@ -53,8 +54,8 @@ allow = [
 if (packageJson.version !== RELEASE_READINESS_VERSION) {
   fail("package version must match the shared core release version");
 }
-if (RELEASE_READINESS_VERSION !== "0.8.0") {
-  fail("package version must remain 0.8.0 for this release");
+if (RELEASE_READINESS_VERSION !== "0.9.0") {
+  fail("package version must remain 0.9.0 for this release");
 }
 if (
   JSON.stringify(packageJson.files) !==
@@ -63,7 +64,12 @@ if (
     "LICENSE-MIT",
     "core.mjs",
     "docs/",
+    "scripts/public-ci.mjs",
+    "scripts/public-release.mjs",
+    "scripts/public-repo-policy.mjs",
     "scripts/run-consumer-check.mjs",
+    "scripts/android-publication.mjs",
+    "scripts/android-runtime.mjs",
     "templates/",
   ])
 ) {
@@ -75,7 +81,7 @@ for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]
   }
 }
 
-assertContains("core.mjs", 'RELEASE_READINESS_VERSION = "0.8.0"');
+assertContains("core.mjs", 'RELEASE_READINESS_VERSION = "0.9.0"');
 assertNotContains("core.mjs", "RELEASE_READINESS_CORE_CONTRACT_VERSION");
 assertContains("package.json", '"reallyme-release-readiness": "scripts/run-consumer-check.mjs"');
 assertContains("scripts/run-consumer-check.mjs", "RELEASE_READINESS_CORE_URL");
@@ -83,6 +89,9 @@ assertContains("scripts/run-consumer-check.mjs", "pathToFileURL(upstreamCorePath
 assertContains("scripts/run-consumer-check.mjs", "MAX_SHARED_CORE_BYTES");
 assertContains("scripts/run-consumer-check.mjs", "RELEASE_READINESS_ENFORCED_VERSION");
 assertContains("scripts/run-consumer-check.mjs", "requiredSourcePolicies");
+assertContains("scripts/run-consumer-check.mjs", "assertPublicRepoPolicy");
+assertContains("templates/cla.yaml", "https://github.com/reallyme/.github/blob/main/CLA.md");
+assertFormalVerificationWorkflow("templates/formal-verification.yml", "proofs");
 assertContains("README.md", "github:reallyme/release-readiness#FULL_COMMIT_SHA");
 assertNotContains("README.md", "release-readiness#main");
 assertContains("README.md", "Latest stable registry requirements");
@@ -218,8 +227,9 @@ assertContains("README.md", "Granular provider contracts");
 assertContains("README.md", "retired-path enforcement");
 assertContains("README.md", "buf generate");
 assertContains("README.md", "ReallyMe Buffa generator");
-assertContains("README.md", "actions/workflows/checks.yml/badge.svg");
-assertContains("README.md", 'RELEASE_READINESS_VERSION = "0.8.0"');
+assertContains("README.md", "actions/workflows/ci.yml/badge.svg");
+assertContains("README.md", "docs/public-ci.md");
+assertContains("README.md", 'RELEASE_READINESS_VERSION = "0.9.0"');
 assertContains("README.md", "repository: reallyme/release-readiness");
 assertContains("README.md", "ref: FULL_RELEASE_READINESS_COMMIT_SHA");
 assertContains("README.md", "persist-credentials: false");
@@ -248,7 +258,7 @@ for (const needle of [
   "rustRelease: {",
   "reallyMeLatestStableDependencies: true",
   "rustSource: {",
-  'version: "0.8.0"',
+  'version: "0.9.0"',
   "repositoryShape: {",
   'archetype: "protocol-engine"',
   "typescriptSource: {",

@@ -11,13 +11,14 @@ import { spawnSync } from "node:child_process";
 // This module is the release package's shared policy core. The public runner
 // supplies this exact immutable module to consumers so release-critical checks
 // cannot drift independently from the pinned package revision.
-export const RELEASE_READINESS_VERSION = "0.8.0";
+export const RELEASE_READINESS_VERSION = "0.9.0";
 
 const DEFAULT_FAILURE_PREFIX = "release readiness check failed";
 const MAX_PRODUCTION_SOURCE_LINES = 500;
 const MAX_SEPARATE_TEST_SOURCE_LINES = 800;
 const RUST_RELEASE_TOOLCHAIN = "1.100.0";
 const CARGO_DENY_VERSION = "0.20.2";
+const CARGO_DENY_INSTALL_ACTION = "taiki-e/install-action";
 const REALLYME_BUFFA_RUNTIME = "reallyme-buffa";
 const REALLYME_BUFFA_GENERATORS = [
   { package: "reallyme-protoc-gen-buffa", executable: "protoc-gen-reallyme-buffa" },
@@ -4238,6 +4239,29 @@ export function createReleaseReadinessContext(options) {
     const changeEvents = new Set(["pull_request", "pull_request_target", "push"]);
     const onHeader = onHeaders[0];
     const inlineTrigger = stripWorkflowInlineComment(onHeader.match[1]).trim();
+    if (process.env.RELEASE_READINESS_CORE_URL === import.meta.url &&
+        process.env.RELEASE_READINESS_ENFORCED_VERSION === RELEASE_READINESS_VERSION) {
+      // The pinned runner supplies this map only after checking the managed
+      // caller against the tracked lane plan. Apply its actual change scope
+      // to the same inputs required for directly triggered workflows.
+      let lanes;
+      try {
+        lanes = JSON.parse(process.env.RELEASE_READINESS_STANDARD_CI_PATHS ?? "{}");
+      } catch {
+        fail("could not read the pinned runner's standard CI coverage");
+      }
+      const rules = lanes?.[path];
+      if (Array.isArray(rules)) {
+        if (rules.length === 0 || rules.some(
+          (rule) => typeof rule === "string" && (rule.endsWith("/")
+            ? normalizedPath.startsWith(rule)
+            : normalizedPath === rule),
+        )) {
+          return;
+        }
+        fail(`${path} standard CI lane does not cover changes to ${normalizedPath}`);
+      }
+    }
     if (inlineTrigger.length !== 0) {
       const events = inlineTrigger.startsWith("[")
         ? parseWorkflowInlineSequence(path, "on trigger", inlineTrigger)
@@ -4427,7 +4451,7 @@ export function createReleaseReadinessContext(options) {
           uses = unquoteWorkflowScalar(usesMatch[1]);
         }
 
-        const conditionMatch = /^\s*(?:if|"if"|'if'):\s*(.*?)\s*$/u.exec(lines[cursor]);
+        const conditionMatch = /^\s*(?:if|"if"|'if')[ \t]*:\s*(.*?)\s*$/u.exec(lines[cursor]);
         if (conditionMatch !== null) {
           if (condition !== null) {
             fail(`${path} step ${name} defines if more than once`);
@@ -4435,7 +4459,7 @@ export function createReleaseReadinessContext(options) {
           condition = unquoteWorkflowScalar(conditionMatch[1]);
         }
 
-        const continueOnErrorMatch = /^\s*(?:continue-on-error|"continue-on-error"|'continue-on-error'):\s*(.*)$/u.exec(lines[cursor]);
+        const continueOnErrorMatch = /^\s*(?:continue-on-error|"continue-on-error"|'continue-on-error')[ \t]*:\s*(.*)$/u.exec(lines[cursor]);
         if (continueOnErrorMatch !== null) {
           if (continueOnError !== null) {
             fail(`${path} step ${name} defines continue-on-error more than once`);
@@ -4454,7 +4478,10 @@ export function createReleaseReadinessContext(options) {
         }
       }
 
-      steps.push({ condition, continueOnError, job: jobName, name, run, uses, workingDirectory, index });
+      steps.push({
+        condition, continueOnError, job: jobName, name, run, uses, workingDirectory,
+        index, end: stepEnd, indent: stepIndent,
+      });
     }
     return steps;
   };
@@ -4478,6 +4505,66 @@ export function createReleaseReadinessContext(options) {
       end: headers[index + 1]?.index ?? lines.length,
       lines,
     }));
+  };
+
+  // Read the structural YAML used by the public workflow gates. Keep the
+  // mapping syntax explicit so aliases, merge keys and flow mappings cannot
+  // introduce jobs or override properties outside the checks.
+  const readWorkflowMapping = (path, lines, start, end, indent) => {
+    const fields = new Map();
+    const key = /^(?:([A-Za-z0-9_-]+)|'([A-Za-z0-9_-]+)'|"([A-Za-z0-9_-]+)")[ \t]*:(?:[ \t]+(.*)|$)/u;
+    let last;
+    for (let index = start; index < end; index += 1) {
+      const line = stripWorkflowInlineComment(lines[index]).trimEnd();
+      if (line.trim().length === 0 || countLeadingSpaces(line) > indent) continue;
+      const match = countLeadingSpaces(line) === indent ? key.exec(line.slice(indent)) : null;
+      if (match === null) fail(`${path} must use explicit block workflow mappings`);
+      const name = match[1] ?? match[2] ?? match[3];
+      if (fields.has(name)) fail(`${path} defines ${name} more than once in a workflow mapping`);
+      if (last !== undefined) last.end = index;
+      last = { value: match[4]?.trim() ?? "", index, end };
+      fields.set(name, last);
+    }
+    return fields;
+  };
+
+  const readPublicWorkflow = (path, source = readText(path)) => {
+    const lines = source.split(/\r?\n/u);
+    const fields = readWorkflowMapping(path, lines, 0, lines.length, 0);
+    const jobsBlock = fields.get("jobs");
+    if (jobsBlock?.value !== "" || lines[jobsBlock.index].trimEnd() !== "jobs:") {
+      fail(`${path} must use an explicit jobs block`);
+    }
+    const definitions = readWorkflowMapping(path, lines, jobsBlock.index + 1, jobsBlock.end, 2);
+    if (definitions.size === 0) fail(`${path} must define at least one workflow job`);
+    const jobs = new Map();
+    for (const [name, field] of definitions) {
+      // The step reader also requires canonical, unquoted job IDs.
+      if (field.value !== "" || !/^[A-Za-z_][A-Za-z0-9_-]*$/u.test(name) ||
+          lines[field.index].trimEnd() !== `  ${name}:`) {
+        fail(`${path} must use explicit block-form workflow job IDs`);
+      }
+      jobs.set(name, readWorkflowMapping(path, lines, field.index + 1, field.end, 4));
+    }
+    const block = (field, indent) => {
+      if (field?.value !== "") fail(`${path} must use an explicit block for this workflow mapping`);
+      return readWorkflowMapping(path, lines, field.index + 1, field.end, indent);
+    };
+    const value = (field) => {
+      if (field === undefined) return undefined;
+      if (lines.slice(field.index + 1, field.end).some((line) => !/^\s*(?:#|$)/u.test(line))) {
+        fail(`${path} must use a single-line workflow scalar here`);
+      }
+      return unquoteWorkflowScalar(field.value);
+    };
+    const sequence = (field, indent, label) => {
+      if (field.value !== "") {
+        value(field);
+        return parseWorkflowInlineSequence(path, label, field.value);
+      }
+      return parseWorkflowBlockSequence(path, lines.slice(0, field.end), field.index, indent, label);
+    };
+    return { lines, fields, jobs, block, sequence, value, scalar: unquoteWorkflowScalar };
   };
 
   const parseWorkflowPermissionBlock = (path, lines, headerIndex, headerIndent, label) => {
@@ -4762,12 +4849,15 @@ export function createReleaseReadinessContext(options) {
     return matches[0] ?? null;
   };
 
-  const assertRequiredVerificationStep = (policy, label, paths) => {
+  const assertRequiredVerificationStep = (policy, label, paths, verifyStep) => {
     const { workflow, job, step, run: command, workingDirectory } = policy ?? {};
-    if (![workflow, job, step, command].every(
+    const required = verifyStep === undefined
+      ? [workflow, job, step, command]
+      : [workflow, job, step];
+    if (!required.every(
       (value) => typeof value === "string" && value.trim().length !== 0,
     )) {
-      fail(`${label} requires a workflow, job, step, and run command`);
+      fail(`${label} requires a workflow, job, step${verifyStep === undefined ? ", and run command" : ""}`);
     }
     if (workingDirectory !== undefined) {
       assertRepositoryDirectory(workingDirectory, `${label} working directory`);
@@ -4826,8 +4916,10 @@ export function createReleaseReadinessContext(options) {
       }
       return directory;
     };
-    const workflowStep = assertWorkflowRunStep(workflow, step, command, job);
     const { lines, start, end } = verificationJob;
+    const workflowStep = verifyStep === undefined
+      ? assertWorkflowRunStep(workflow, step, command, job)
+      : findWorkflowStep(workflow, step, job);
     const effectiveDirectory = workflowStep.workingDirectory ??
       readDefaultDirectory(lines, start + 1, end, 4) ??
       readDefaultDirectory(lines, 0, lines.length, 0) ?? ".";
@@ -4843,7 +4935,128 @@ export function createReleaseReadinessContext(options) {
     if ([jobTolerance, workflowStep.continueOnError].some((value) => value !== null && value !== "false")) {
       fail(`${workflow} ${job}/${step} must fail CI when verification fails`);
     }
+    if (verifyStep !== undefined) {
+      verifyStep(workflowStep, lines);
+    }
     return workflowStep;
+  };
+
+  const readWorkflowStepInputs = (location, step, lines) => {
+    const inputs = new Map();
+    const withKey = /^(?:with|"with"|'with'):\s*(.*)$/u;
+    let inWith = false;
+    let hasWith = false;
+    for (const rawLine of lines.slice(step.index + 1, step.end)) {
+      const line = stripWorkflowInlineComment(rawLine).trimEnd();
+      if (line.trim().length === 0) {
+        continue;
+      }
+      const depth = countLeadingSpaces(line);
+      if (depth === step.indent + 2) {
+        const mapping = withKey.exec(line.trimStart());
+        inWith = mapping !== null;
+        if (mapping !== null && (hasWith || mapping[1].length !== 0)) {
+          fail(`${location} must use one block-form with mapping`);
+        }
+        hasWith ||= inWith;
+        continue;
+      }
+      if (inWith) {
+        const input = /^([a-zA-Z0-9_-]+):\s*(.+)$/u.exec(line.trimStart());
+        if (depth !== step.indent + 4 || input === null || inputs.has(input[1])) {
+          fail(`${location} has an unsupported or duplicate installer input`);
+        }
+        inputs.set(input[1], unquoteWorkflowScalar(input[2]));
+      }
+    }
+    return inputs;
+  };
+
+  const assertPublicPolicyWorkflow = (path, job, selfCheck) => {
+    const verify = assertRequiredVerificationStep({
+      workflow: path, job, step: "Run release readiness checks",
+      run: selfCheck ? "npm run check" : "node .release-readiness/scripts/run-consumer-check.mjs",
+    }, "public CI policy", []);
+    const steps = extractWorkflowSteps(path).filter((step) => step.job === job);
+    const lines = readPublicWorkflow(path).lines;
+    const checkoutInputs = (directory) => {
+      const checkout = steps.findLast((step) =>
+        step.index < verify.index && /^actions\/checkout@/u.test(step.uses ?? "") &&
+        (readWorkflowStepInputs(path, step, lines).get("path") ?? ".") === directory);
+      if (checkout === undefined || checkout.condition !== null ||
+          (checkout.continueOnError !== null && checkout.continueOnError !== "false") ||
+          !/^actions\/checkout@[0-9a-f]{40}$/u.test(checkout.uses)) {
+        fail(`${path} must check out ${directory} with pinned actions/checkout before running policy`);
+      }
+      return readWorkflowStepInputs(path, checkout, lines);
+    };
+    const source = checkoutInputs(".");
+    if (source.get("persist-credentials") !== "false" ||
+        (source.has("ref") && source.get("ref") !== "${{ github.sha }}") ||
+        (source.has("repository") && source.get("repository") !== "${{ github.repository }}")) {
+      fail(`${path} must check out the policy candidate SHA without persisting credentials`);
+    }
+    if (selfCheck) return;
+    const inputs = checkoutInputs(".release-readiness");
+    if (inputs.get("repository") !== "reallyme/release-readiness" ||
+        !/^[0-9a-f]{40}$/u.test(inputs.get("ref") ?? "") ||
+        inputs.get("persist-credentials") !== "false") {
+      fail(`${path} must pin reallyme/release-readiness to a full commit SHA without persisting credentials`);
+    }
+  };
+
+  const assertCargoDenyInstallStep = (workflow, job, name, step, lines) => {
+    const location = `${workflow} ${job}/${name}`;
+    const cargoInstall = `cargo +${RUST_RELEASE_TOOLCHAIN} install cargo-deny --version '=${CARGO_DENY_VERSION}' --locked`;
+    if (step.run !== null && step.uses !== null) {
+      fail(`${location} must define one installation method`);
+    }
+    if (step.run !== null) {
+      const command = normalizeWorkflowRunCommand(step.run);
+      if (command !== cargoInstall && command !== `${cargoInstall} --force`) {
+        fail(`${location} run command changed; pin cargo-deny ${CARGO_DENY_VERSION} and use --locked`);
+      }
+      if (command === `${cargoInstall} --force`) {
+        return;
+      }
+
+      for (const candidate of extractWorkflowSteps(workflow)) {
+        if (candidate.job !== job || candidate.index >= step.index || candidate.uses === null) {
+          continue;
+        }
+        // A restored crate cache can contain binaries without Cargo's install
+        // metadata. A dedicated key separates dependency-only cache entries.
+        if (/^swatinem\/rust-cache@/iu.test(candidate.uses)) {
+          const inputs = readWorkflowStepInputs(location, candidate, lines);
+          if (inputs.get("cache-bin") === "false" && /^[A-Za-z0-9_-]+$/u.test(inputs.get("key") ?? "")) {
+            continue;
+          }
+        } else if (/^taiki-e\/install-action@/iu.test(candidate.uses)) {
+          const inputs = readWorkflowStepInputs(location, candidate, lines);
+          const tools = inputs.get("tool")?.split(/[\s,]+/u).filter(Boolean);
+          if (tools?.length > 0 && tools.every((tool) =>
+            /^[a-zA-Z0-9_-]+@\d+\.\d+\.\d+$/u.test(tool) && !tool.startsWith("cargo-deny@"),
+          )) {
+            continue;
+          }
+        } else if (!/^actions\/cache[@/]/iu.test(candidate.uses)) {
+          continue;
+        }
+        fail(`${location} can collide with restored tools; use the pinned prebuilt installer, add --force, or separate binaries from the dependency cache`);
+      }
+      return;
+    }
+
+    const prefix = `${CARGO_DENY_INSTALL_ACTION}@`;
+    if (!step.uses?.startsWith(prefix) || !/^[0-9a-f]{40}$/u.test(step.uses.slice(prefix.length))) {
+      fail(`${location} must use ${CARGO_DENY_INSTALL_ACTION} pinned to a full commit SHA`);
+    }
+    const inputs = readWorkflowStepInputs(location, step, lines);
+    if ([...inputs.keys()].some((key) => !["tool", "fallback", "checksum"].includes(key)) ||
+        inputs.get("tool") !== `cargo-deny@${CARGO_DENY_VERSION}` ||
+        inputs.get("fallback") !== "none" || (inputs.get("checksum") ?? "true") !== "true") {
+      fail(`${location} must install cargo-deny@${CARGO_DENY_VERSION} with checksums and fallback: none`);
+    }
   };
 
   const assertProtobufFirstPolicy = (policy, defaultCheckerPath = "scripts/check_release_readiness.mjs") => {
@@ -5053,8 +5266,9 @@ export function createReleaseReadinessContext(options) {
       workflow,
       job,
       step: installStep,
-      run: `cargo +${RUST_RELEASE_TOOLCHAIN} install cargo-deny --version '=${CARGO_DENY_VERSION}' --locked`,
-    }, "Cargo Deny installation", []);
+    }, "Cargo Deny installation", [], (step, lines) =>
+      assertCargoDenyInstallStep(workflow, job, installStep, step, lines),
+    );
     if (install.index >= audit.index) {
       fail(`${workflow} ${job} must install Cargo Deny before dependency review`);
     }
@@ -5077,6 +5291,130 @@ export function createReleaseReadinessContext(options) {
       fail(`${path} job ${job.name} uses an unsupported needs declaration`);
     }
     return [scalar];
+  };
+
+  const trackedKaniHarnesses = () => {
+    const args = [
+      "grep", "-I", "-l", "-z", "-E", "-e",
+      // Also match harnesses gated as `#[cfg_attr(kani, kani::proof)]`.
+      "^[[:space:]]*#\\[[[:space:]]*(cfg_attr[[:space:]]*\\([^]]*,[[:space:]]*)?(::)?kani::proof(_for_contract)?([[:space:]]|\\(|\\)|\\]|,)",
+      "--", "*.rs",
+    ];
+    const result = spawnSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 16_777_216 });
+    if (result.error !== undefined || (result.status !== 0 && result.status !== 1)) {
+      fail("could not enumerate tracked Kani proof harnesses");
+    }
+    return result.stdout.split("\0").filter(Boolean);
+  };
+
+  const assertFormalVerificationWorkflow = (path, receiptName) => {
+    assertWorkflowPermissionsPolicy({ path, workflow: { contents: "read" } });
+    const jobs = extractWorkflowJobs(path);
+    const lines = jobs[0]?.lines ?? [];
+    const jobBlock = lines.findIndex((line) => /^jobs:\s*$/u.test(line));
+    // Match the same job set GitHub will see. A quoted key or an inline
+    // mapping must never disappear from the proof aggregate's needs.
+    const firstAfterJobs = lines.findIndex((line, index) =>
+      index > jobBlock && /^[^ #\t]/u.test(line));
+    const topLevelJobs = lines.slice(jobBlock + 1, firstAfterJobs < 0 ? undefined : firstAfterJobs)
+      .filter((line) => /^ {2}[^ #\t]/u.test(line));
+    const jobNames = new Set(jobs.map((job) => job.name));
+    const receipt = jobs.find((job) => job.name === receiptName);
+    if (receipt === undefined || jobNames.size !== jobs.length ||
+        topLevelJobs.length !== jobs.length ||
+        topLevelJobs.some((line) => !/^  [A-Za-z0-9_-]+:[ \t]*$/u.test(line))) {
+      fail(`${path} must use block-form job IDs and define a distinct job that reports verified_sha`);
+    }
+    const receiptOutputs = receipt.lines.slice(receipt.start + 1, receipt.end);
+    const outputBlocks = [...receiptOutputs.keys()].filter((index) =>
+      /^ {4}(?:outputs|"outputs"|'outputs'):/u.test(receiptOutputs[index]));
+    if (outputBlocks.length !== 1 || !/^ {4}outputs:[ \t]*$/u.test(receiptOutputs[outputBlocks[0]]) ||
+        !/^ {6}verified_sha: \$\{\{ github\.sha \}\}[ \t]*$/u.test(receiptOutputs[outputBlocks[0] + 1] ?? "") ||
+        receiptOutputs.filter((line) => /^ {6}(?:verified_sha|"verified_sha"|'verified_sha'):/u.test(line)).length !== 1) {
+      fail(`${path} job ${receiptName} must report the candidate with outputs.verified_sha`);
+    }
+    const stepsByJob = Map.groupBy(extractWorkflowSteps(path), (step) => step.job);
+    const scripts = new Set();
+    for (const job of jobs) {
+      const location = `${path} job ${job.name}`;
+      const readProperty = (key) => parseWorkflowJobScalar(path, job, key);
+      const minutes = readProperty("timeout-minutes");
+      if (minutes === null || !/^[1-9][0-9]*$/u.test(minutes) || Number(minutes) > 360) {
+        fail(`${location} must have an explicit timeout of 1 to 360 minutes`);
+      }
+      const tolerance = readProperty("continue-on-error");
+      if (readProperty("if") !== null || (tolerance !== null && tolerance !== "false")) {
+        fail(`${location} must run without a condition and propagate failures`);
+      }
+      if (readProperty("environment") !== null) {
+        fail(`${location} must run without a deployment environment`);
+      }
+      if (readProperty("runs-on") === null || readProperty("uses") !== null) {
+        fail(`${location} must run on a declared GitHub-hosted runner`);
+      }
+      const needs = parseWorkflowNeeds(path, job);
+      if (job === receipt && jobs.length > 1) {
+        if (new Set(needs).size !== jobs.length - 1 || needs.length !== jobs.length - 1 ||
+            jobs.some((candidate) => candidate !== receipt && !needs.includes(candidate.name))) {
+          fail(`${location} must depend on every formal verification job`);
+        }
+        if (readProperty("strategy") !== null) {
+          fail(`${location} must report one result for all proof jobs`);
+        }
+        continue;
+      }
+      if (needs.length !== 0) {
+        fail(`${location} must run independently of the other proof jobs`);
+      }
+      const steps = stepsByJob.get(job.name) ?? [];
+      const verificationSteps = steps.filter((step) => step.name === "Verify proof obligations");
+      if (verificationSteps.length !== 1) {
+        fail(`${location} must define one Verify proof obligations step`);
+      }
+      const [step] = verificationSteps;
+      if (step.run === null || step.uses !== null || step.condition !== null ||
+          (step.continueOnError !== null && step.continueOnError !== "false")) {
+        fail(`${location} must run Verify proof obligations unconditionally and propagate failures`);
+      }
+      const shell = job.lines.slice(step.index + 1, step.end).filter((line) =>
+        countLeadingSpaces(line) === step.indent + 2 && /^\s*(?:shell|"shell"|'shell'):/u.test(line));
+      if (shell.length !== 1 || shell[0].trim() !== "shell: bash") {
+        fail(`${location} must use shell: bash for Verify proof obligations so piped failures propagate`);
+      }
+      if (step.workingDirectory !== ".") {
+        fail(`${location} must run Verify proof obligations from the repository root`);
+      }
+      const commands = step.run.trim().split("\n");
+      const scriptCommand = /^bash -e -o pipefail (scripts\/(?:[a-zA-Z0-9_-][a-zA-Z0-9_.-]*\/)*[a-zA-Z0-9_-][a-zA-Z0-9_.-]*\.sh)$/u;
+      const unchanged = 'git diff --no-ext-diff --exit-code "$GITHUB_SHA" --';
+      const verifySha = 'test "$(git rev-parse --verify HEAD)" = "$GITHUB_SHA"';
+      const script = scriptCommand.exec(commands[2] ?? "")?.[1];
+      if (commands.length !== 5 || commands[0] !== verifySha || commands[1] !== unchanged ||
+          script === undefined || commands[3] !== verifySha || commands[4] !== unchanged) {
+        fail(`${location} must verify the checked out SHA and tracked inputs before and after running the proof script`);
+      }
+      scripts.add(script);
+      const prematureSteps = job.lines.slice(job.start + 1, step.index).filter((line) =>
+        countLeadingSpaces(line) === step.indent && /^\s*-\s+/u.test(line));
+      if (prematureSteps.length !== steps.filter((candidate) => candidate.index < step.index).length) {
+        fail(`${location} must use named setup steps before Verify proof obligations`);
+      }
+      const checkout = steps.findLast((candidate) =>
+        candidate.index < step.index && /^actions\/checkout@/u.test(candidate.uses ?? "") &&
+        readWorkflowStepInputs(location, candidate, job.lines).get("path") === undefined);
+      if (checkout === undefined || checkout.condition !== null ||
+          (checkout.continueOnError !== null && checkout.continueOnError !== "false") ||
+          !/^actions\/checkout@[0-9a-f]{40}$/u.test(checkout.uses ?? "")) {
+        fail(`${location} must check out the candidate before running proofs`);
+      }
+      const inputs = readWorkflowStepInputs(location, checkout, job.lines);
+      if (inputs.get("persist-credentials") !== "false" ||
+          (inputs.has("ref") && inputs.get("ref") !== "${{ github.sha }}") ||
+          (inputs.has("repository") && inputs.get("repository") !== "${{ github.repository }}")) {
+        fail(`${location} must check out the candidate SHA without persisting credentials`);
+      }
+    }
+    return scripts;
   };
 
   const assertWorkflowJobs = (path, expectedJobs) => {
@@ -6240,10 +6578,15 @@ export function createReleaseReadinessContext(options) {
     assertReallyMeRustProtoRepositoryPolicy,
     normalizeWorkflowRunCommand,
     extractWorkflowSteps,
+    readPublicWorkflow,
+    readWorkflowStepInputs,
+    assertPublicPolicyWorkflow,
     assertWorkflowRunStep,
     assertWorkflowUsesStep,
     assertWorkflowUsesStepPinnedTo,
     assertWorkflowPolicy,
+    assertFormalVerificationWorkflow,
+    trackedKaniHarnesses,
     assertProtobufFirstPolicy,
     stripProtoLineComments,
     extractProtoBlocks,

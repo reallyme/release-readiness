@@ -5,10 +5,10 @@
 name: Release Readiness
 
 on:
-  pull_request:
-  push:
-    branches:
-      - main
+  workflow_call:
+    outputs:
+      verified_sha:
+        value: ${{ jobs.checks.outputs.verified_sha }}
 
 permissions:
   contents: read
@@ -16,13 +16,25 @@ permissions:
 jobs:
   checks:
     name: Node 26 release-readiness checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      verified_sha: ${{ steps.verified.outputs.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "26"
       - name: Run release readiness checks
         run: npm run check
+      - name: Record verified source
+        id: verified
+        shell: bash
+        run: |
+          sha=$(git rev-parse --verify HEAD)
+          test "$sha" = "$GITHUB_SHA"
+          echo "sha=$sha" >>"$GITHUB_OUTPUT"

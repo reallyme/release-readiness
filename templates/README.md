@@ -24,6 +24,42 @@ permission notice with copies or in associated documentation.
 [Blue Oak Model License](https://blueoakcouncil.org/license/1.0.0) ·
 [Unicode License v3](https://www.unicode.org/license.txt)
 
+## Public repository CLA
+
+Copy [`cla.yaml`](cla.yaml) to `.github/workflows/cla.yaml` or
+`.github/workflows/cla.yml` in the public ReallyMe repository and track it in
+Git. The runner verifies the complete workflow against the pinned template.
+GitHub Actions runs the signature check on pull requests and handles signing
+and the exact `recheck` command through PR comments. Each repository stores signatures in
+`signatures/cla.json` on its own `cla-signatures` branch and links to the
+organization's [ReallyMe CLA](https://github.com/reallyme/.github/blob/main/CLA.md).
+
+Create the `cla-signatures` branch before enabling the workflow and allow the
+workflow's repository token to update it. Set `CLAAssistant` from GitHub
+Actions as a required status check in the default-branch ruleset. If the repo
+uses a merge queue, use squash merging and confirm that the queue-generated
+commit subjects end with the GitHub PR number, such as `(#123)`. The queue
+workflow uses that number to find the latest signature-checking run for the PR
+and its current head. Exercise the signature and recheck flow on a PR before
+requiring the check, and validate a live queue run before adopting the template
+in a merge-queue repository.
+[Buffa CLA workflow](https://github.com/anthropics/buffa/blob/main/.github/workflows/cla.yaml) ·
+[GitHub required status checks](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks)
+
+## Public formal verification
+
+Use [`formal-verification.yml`](formal-verification.yml) as the reusable
+workflow for the `formal` lane. Supply `scripts/check-formal.sh` or point the
+step at an existing tracked Bash proof script under `scripts/`.
+See the [CI contract](../docs/public-ci.md#formal-verification)
+for path scope, job results, and how to wire several proof jobs together.
+
+## Public Android runtime
+
+Use [`android-runtime.yml`](android-runtime.yml) for the `android` lane.
+Fill in the pinned release-readiness commit and implement the staging and
+consumer scripts in the [Android runtime contract](../docs/public-ci.md#android-runtime).
+
 ## Rust protobuf checker
 
 Use this template for a ReallyMe Rust repository that owns an executable

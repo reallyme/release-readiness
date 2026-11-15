@@ -68,10 +68,24 @@ steps into the corresponding CI jobs after checkout and toolchain setup:
 
 # In job dependencies, in this order
 - name: Install cargo-deny
-  run: cargo +1.100.0 install cargo-deny --version '=0.20.2' --locked
+  uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39
+  with:
+    tool: cargo-deny@0.20.2
+    fallback: none
 - name: Check locked dependencies
   run: cargo +1.100.0 deny --locked --workspace --all-features --config deny.toml check advisories licenses sources
 ```
+
+The prebuilt installer verifies checksums and avoids compiling the tool on
+the runner. A source build can use the plain pinned Cargo install when the
+binary directory stays clean. For `Swatinem/rust-cache`, set
+`cache-bin: false` and use a new dependency-only cache key when migrating
+from a cache that included binaries. Use
+`cargo +1.100.0 install cargo-deny --version '=0.20.2' --locked --force`
+when a restored cache or earlier setup step can leave an existing binary.
+Release-readiness validates these steps locally without restoring caches or
+installing anything. Run the consumer's policy checks as well as
+`actionlint` after changes to release workflows.
 
 Add an MSRV entry for every publishable workspace member. Cargo metadata
 resolves inherited manifest fields and publication settings. Use `msrv: []`

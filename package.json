@@ -1,6 +1,6 @@
 {
   "name": "@reallyme/release-readiness",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
   "description": "Shared release-readiness guardrails for ReallyMe repositories.",
@@ -13,11 +13,16 @@
     "LICENSE-MIT",
     "core.mjs",
     "docs/",
+    "scripts/public-ci.mjs",
+    "scripts/public-release.mjs",
+    "scripts/public-repo-policy.mjs",
     "scripts/run-consumer-check.mjs",
+    "scripts/android-publication.mjs",
+    "scripts/android-runtime.mjs",
     "templates/"
   ],
   "scripts": {
-    "check": "node --check core.mjs && node --check scripts/check_release_readiness.mjs && node --check scripts/run-consumer-check.mjs && node --test test/*.test.mjs && node scripts/check_release_readiness.mjs"
+    "check": "node --check core.mjs && node --check scripts/check_release_readiness.mjs && node --check scripts/public-ci.mjs && node --check scripts/public-release.mjs && node --check scripts/public-repo-policy.mjs && node --check scripts/run-consumer-check.mjs && node --check scripts/android-publication.mjs && node --check scripts/android-runtime.mjs && node --test test/*.test.mjs && node scripts/check_release_readiness.mjs"
   },
   "engines": {
     "node": ">=26"

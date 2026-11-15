@@ -4,7 +4,7 @@
 
 **Shared release-readiness guardrails for ReallyMe repositories**
 
-[![Release Readiness](https://github.com/reallyme/release-readiness/actions/workflows/checks.yml/badge.svg)](https://github.com/reallyme/release-readiness/actions/workflows/checks.yml)
+[![Release Readiness](https://github.com/reallyme/release-readiness/actions/workflows/ci.yml/badge.svg)](https://github.com/reallyme/release-readiness/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](LICENSE-MIT)
 
 </div>
@@ -71,7 +71,7 @@ current marker is:
 ```js
 assertContains(
   "core.mjs",
-  'RELEASE_READINESS_VERSION = "0.8.0"',
+  'RELEASE_READINESS_VERSION = "0.9.0"',
 );
 ```
 
@@ -106,7 +106,7 @@ Other exact requirements are intentional toolchain and release contracts:
 | ReallyMe Buffa runtime and generators | Exact workflow `BUFFA_VERSION` and matching Cargo requirement for `reallyme-buffa` | Update the workflow, Cargo requirement, lockfile where used, and generated output together |
 | cargo-fuzz template | Exact workflow `CARGO_FUZZ_VERSION` | Update the workflow value; both install lanes use that variable |
 | Node runtime | 26 in this repository and template; consumer minimum and package engine `>=26` | Review a runtime-major migration in this repository's workflow, checker, template, and package engine |
-| Release-readiness package | 0.8.0 | Publish a new package revision and update consumer pins |
+| Release-readiness package | 0.9.0 | Publish a new package revision and update consumer pins |
 
 Dependabot does not update version literals embedded in checker source. The
 shared core validates Buf, the ReallyMe Buffa toolchain, and template cargo-fuzz
@@ -127,7 +127,7 @@ const { createReleaseReadinessContext } = await import(coreUrl);
 
 Remote CI must pin this repository by a reviewed full commit SHA. Never use a
 mutable branch or tag in a credential-bearing workflow. Two invocation modes
-are supported.
+are supported for loading the package.
 
 An explicit checkout keeps the reviewed package visible in the job workspace:
 
@@ -152,8 +152,8 @@ npm exec --yes --package=github:reallyme/release-readiness#FULL_COMMIT_SHA -- \
   reallyme-release-readiness
 ```
 
-Both modes execute the same package runner. Arguments after
-`reallyme-release-readiness` in npm mode are passed to the consumer's
+Both modes execute the same package runner. The workflow and release commands
+are handled by the runner. Other arguments go to the consumer's
 `scripts/check_release_readiness.mjs`. The runner supplies its own immutable
 core through `RELEASE_READINESS_CORE_URL`; the consumer does not vendor or
 modify it. The runner also detects tracked Rust, TypeScript, Swift, and Kotlin
@@ -164,8 +164,17 @@ call.
 For a repository with a tracked root `Cargo.toml`, the runner also requires
 the [Rust release policy](docs/rust-release.md). It pins development and release
 to Rust 1.100.0 and checks that CI tests each publishable crate at its declared
-MSRV and audits the locked dependency graph. Use Rust 1.96 as the recommended
-MSRV for new public crates.
+MSRV and audits the locked dependency graph against the repository's
+`deny.toml`. The runner has required that license audit since `0.8.0`. Its
+[eight-license template](templates/deny.toml) is a recommended baseline.
+Use Rust 1.96 as the recommended MSRV for new public crates.
+
+The public-repo policy requires the [standard CI workflow](docs/public-ci.md)
+and [CLA workflow](templates/README.md#public-repository-cla) in public ReallyMe
+repositories. The runner reads repository visibility from the GitHub Actions
+event. Run `--check-workflows` with `RELEASE_READINESS_PUBLIC_REPO=true` to check
+the workflow wiring locally. Repositories with formal proofs or models use the
+[formal verification lane](docs/public-ci.md#formal-verification).
 
 For a new Rust/protobuf repository, start from
 [`templates/check_release_readiness.mjs`](templates/check_release_readiness.mjs)
