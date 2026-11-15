@@ -22,10 +22,10 @@ const MAX_SHARED_CORE_BYTES = 262_144;
 const MAX_TRACKED_FILES_BYTES = 16_777_216;
 const args = process.argv.slice(2);
 const commandArguments = new Map([
-  ["--check-workflows", 0],
-  ["--render-ci", 0],
-  ["--render-preflight-summary", 0],
-  ["--check-release", 5],
+  ["--check-workflows", [0]],
+  ["--render-ci", [0]],
+  ["--render-preflight-summary", [0, 1]],
+  ["--check-release", [5]],
 ]);
 const workflowCommand = args.find((arg) => commandArguments.has(arg));
 
@@ -91,13 +91,20 @@ const selfCheck = relative(repositoryRoot, upstreamCorePath) === "core.mjs" &&
   (process.env.GITHUB_ACTIONS !== "true" ||
     process.env.GITHUB_REPOSITORY?.toLowerCase() === "reallyme/release-readiness");
 if (workflowCommand !== undefined &&
-    (args[0] !== workflowCommand || args.length !== commandArguments.get(workflowCommand) + 1)) {
-  failure(workflowCommand === "--check-release"
-    ? "use --check-release ECOSYSTEM PHASE VERSION TAG SOURCE_SHA"
-    : `${workflowCommand} must be used on its own`);
+    (args[0] !== workflowCommand || !commandArguments.get(workflowCommand).includes(args.length - 1))) {
+  if (workflowCommand === "--check-release") failure("use --check-release ECOSYSTEM PHASE VERSION TAG SOURCE_SHA");
+  if (workflowCommand === "--render-preflight-summary") failure("use --render-preflight-summary [ECOSYSTEM]");
+  failure(`${workflowCommand} must be used on its own`);
 }
 if (workflowCommand === "--render-preflight-summary") {
-  process.stdout.write(renderPreflightSummaryStep());
+  const [, ecosystem] = args;
+  let publishWorkflow;
+  if (ecosystem !== undefined) {
+    const { release } = readPublicCiConfig(repositoryContext, trackedFiles, { selfCheck });
+    publishWorkflow = release?.channels.get(ecosystem)?.publish;
+    if (publishWorkflow === undefined) failure("choose a release ecosystem declared in .github/release-readiness.json");
+  }
+  process.stdout.write(renderPreflightSummaryStep(publishWorkflow));
 } else if (workflowCommand === "--render-ci") {
   // Let stdout flush when a caller pipes the rendered file.
   const { lanes, mergeQueue } = readPublicCiConfig(repositoryContext, trackedFiles, { selfCheck });

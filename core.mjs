@@ -11,7 +11,7 @@ import { spawnSync } from "node:child_process";
 // This module is the release package's shared policy core. The public runner
 // supplies this exact immutable module to consumers so release-critical checks
 // cannot drift independently from the pinned package revision.
-export const RELEASE_READINESS_VERSION = "0.9.3";
+export const RELEASE_READINESS_VERSION = "0.9.4";
 
 const DEFAULT_FAILURE_PREFIX = "release readiness check failed";
 const MAX_PRODUCTION_SOURCE_LINES = 500;

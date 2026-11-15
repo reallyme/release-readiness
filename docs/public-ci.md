@@ -158,6 +158,17 @@ Run the policy check from the candidate merge checkout when the rollout lands
 alongside another branch. The combined tree can introduce requirements such as
 a formal lane for newly tracked Kani harnesses.
 
+When moving checks into reusable workflows, verify the affected job's setup
+from a clean checkout with empty dependency caches. Each hosted job needs
+its own setup for the commands it runs:
+
+- Install the native libraries selected by the tested features in every job
+  that uses them, including MSRV jobs that test with `--all-features`.
+- Run `cargo fetch --locked` before offline proofs that resolve Cargo metadata
+  across targets. Fetch from the workspace that owns the lockfile the proofs use.
+- Install dependencies from every npm lockfile the check uses. A conformance
+  package that builds an SDK in another directory may need both installs.
+
 Rehearse the consumer's tooling tests with the GitHub Actions environment they
 will inherit. Include a public push event payload and its matching
 `GITHUB_REPOSITORY` with `GITHUB_ACTIONS=true`. When a test invokes the pinned
@@ -446,19 +457,22 @@ Upload the package bytes and any evidence the publisher needs to verify them.
 For example, upload the tested npm tarball or the reviewed crate archives and
 their attestation. Keep existing signature, manifest and package checks.
 
-Add the same release-input summary step to every crates.io, npm, Swift, and
-Maven preflight. Generate it from a checkout of the repository adopting the
-workflow.
+Add a release input summary to every crates.io, npm, Swift, and Maven preflight.
+Generate it from the consumer checkout using the ecosystem name `crates`,
+`npm`, `swift`, or `maven`. The renderer reads that ecosystem's publish workflow
+from the repository's tracked configuration.
 
 ```sh
-node .release-readiness/scripts/run-consumer-check.mjs --render-preflight-summary
+node .release-readiness/scripts/run-consumer-check.mjs --render-preflight-summary swift
 ```
 
 Paste the generated step after the package or attestation upload in an
-existing preflight job. The step writes the version and full source SHA as
-separate copyable values in the Actions summary. Copy the values once the
-preflight run succeeds. The step uses the existing dispatch inputs and
-requires no additional checkout or job.
+existing preflight job. Once the preflight succeeds, copy the `gh workflow run`
+command from the Actions summary and run it to start the publish workflow with
+both inputs filled in. Edit `version` or `source_sha` before running the command
+to select another candidate that passed this ecosystem's preflight. The summary
+also lists the values separately for the GitHub form. The step uses the existing
+dispatch inputs and requires no additional checkout or job.
 
 Use this dispatch input wording for every corresponding publish workflow.
 

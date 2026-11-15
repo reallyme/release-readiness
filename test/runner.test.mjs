@@ -243,17 +243,36 @@ test("workflow-only check catches CI drift before running a consumer checker", (
   assert.match(duplicate.stderr, /ci\.yaml must not exist/u);
 });
 
-test("the preflight summary step reports copyable inputs for an exact main dispatch", (t) => {
+test("the preflight summary gives the configured publish command and form inputs for an exact main dispatch", (t) => {
   const root = createConsumer();
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const render = (args) => runConsumer(root, runnerPath, {}, ["--render-preflight-summary", ...args]);
-  const rendered = render([]);
+  const formOnly = render([]);
+  assert.equal(formOnly.status, 0, formOnly.stderr);
+  assert.doesNotMatch(formOnly.stdout, /gh workflow run/u);
+  const extraArgument = render(["maven", "extra"]);
+  assert.equal(extraArgument.status, 1);
+  assert.match(extraArgument.stderr, /use --render-preflight-summary \[ECOSYSTEM\]/u);
+
+  const preflight = "kotlin-android-package-preflight.yml";
+  const publish = "kotlin-android-package-release.yml";
+  mkdirSync(join(root, ".github/workflows"), { recursive: true });
+  writeFileSync(join(root, ".github/workflows", preflight), releaseWorkflow("maven", "preflight"));
+  writeFileSync(join(root, ".github/workflows", publish), releaseWorkflow("maven", "publish"));
+  writeFileSync(join(root, "build.gradle.kts"), 'version = "0.4.3"\n');
+  writeFileSync(join(root, mavenBundlePath), mavenBundleFixture, { mode: 0o755 });
+  stageFiles(root, ".");
+  installStandardCi(root, {}, {
+    tagPrefix: "v", maven: { preflight, publish, manifests: ["build.gradle.kts"], artifacts: ["maven"] },
+  });
+  const undeclared = render(["swift"]);
+  assert.equal(undeclared.status, 1);
+  assert.match(undeclared.stderr, /choose a release ecosystem declared/u);
+
+  const rendered = render(["maven"]);
   assert.equal(rendered.status, 0, rendered.stderr);
   assert.match(rendered.stdout, /RELEASE_VERSION: \$\{\{ inputs\.version \}\}/u);
   assert.match(rendered.stdout, /SOURCE_SHA: \$\{\{ inputs\.source_sha \}\}/u);
-  const extraArgument = render(["crates"]);
-  assert.equal(extraArgument.status, 1);
-  assert.match(extraArgument.stderr, /must be used on its own/u);
 
   const [header, body] = rendered.stdout.split("  run: |\n");
   assert.ok(body);
@@ -269,7 +288,7 @@ test("the preflight summary step reports copyable inputs for an exact main dispa
     env: {
       ...process.env, ...patterns, RELEASE_VERSION: "0.4.3", SOURCE_SHA: sha,
       GITHUB_SHA: sha, GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_REF: "refs/heads/main",
-      GITHUB_STEP_SUMMARY: summary, ...overrides,
+      GITHUB_REPOSITORY: "reallyme/example", GITHUB_STEP_SUMMARY: summary, ...overrides,
     },
   });
   writeFileSync(summary, "Existing summary\n\n");
@@ -279,6 +298,8 @@ test("the preflight summary step reports copyable inputs for an exact main dispa
   const fence = "```";
   const content = [
     "Existing summary", "", "## Release form inputs", "",
+    "After this preflight succeeds, run this command to dispatch publish with both inputs set.", "",
+    `${fence}sh`, `gh workflow run ${publish} --repo github.com/reallyme/example --ref main -f version=0.4.3 -f source_sha=${sha}`, fence, "",
     "Copy these values into the release form for this ecosystem once the preflight run succeeds.", "",
     "**Version**", `${fence}text`, "0.4.3", fence, "",
     "**Source SHA**", `${fence}text`, sha, fence, "",
@@ -290,8 +311,10 @@ test("the preflight summary step reports copyable inputs for an exact main dispa
     { GITHUB_REF: "refs/heads/topic" },
     { GITHUB_SHA: "b".repeat(40) },
     { SOURCE_SHA: "aaa", GITHUB_SHA: "aaa" },
+    { RELEASE_VERSION: sha },
     { RELEASE_VERSION: "0.04.3" },
     { RELEASE_VERSION: "0.4.3\nadditional text" },
+    { GITHUB_REPOSITORY: "reallyme/example --ref topic" },
     { GITHUB_STEP_SUMMARY: "" },
     { GITHUB_STEP_SUMMARY: root },
   ]) {
@@ -441,7 +464,7 @@ process.stdout.write(JSON.stringify([page]));
 ' -- "$@"
 `, { mode: 0o755 });
   const workflows = { npm: { preflight, publish }, maven: { preflight: mavenPreflight, publish: mavenPublish } };
-  const check = (phase, overrides = {}, ecosystem = "npm") => runConsumer(root, runnerPath, {
+  const check = (phase, overrides = {}, ecosystem = "npm", releaseVersion = version) => runConsumer(root, runnerPath, {
     GITHUB_ACTIONS: "true",
     GITHUB_EVENT_PATH: eventPath,
     GITHUB_EVENT_NAME: "workflow_dispatch",
@@ -453,10 +476,13 @@ process.stdout.write(JSON.stringify([page]));
     PATH: `${root}${delimiter}${process.env.PATH}`,
     RR_TEST_NODE: process.execPath,
     ...overrides,
-  }, ["--check-release", ecosystem, phase, version, "v1.2.3", sha]);
+  }, ["--check-release", ecosystem, phase, releaseVersion, `v${releaseVersion}`, sha]);
   const unqualified = check("preflight", { GITHUB_SHA: "b".repeat(40) });
   assert.equal(unqualified.status, 1);
   assert.match(unqualified.stderr, /dispatch version and source SHA/u);
+  const shaInVersionField = check("publish", {}, "npm", sha);
+  assert.equal(shaInVersionField.status, 1);
+  assert.match(shaInVersionField.stderr, /release version such as 0\.4\.3 in version and the full commit SHA in source_sha/u);
   for (const phase of ["preflight", "publish"]) {
     const result = check(phase);
     assert.equal(result.status, 0, result.stderr);
@@ -698,7 +724,7 @@ test("runner supplies its immutable package core to the consumer", () => {
     `const coreUrl = process.env.RELEASE_READINESS_CORE_URL;
 if (typeof coreUrl !== "string") process.exit(2);
 const { RELEASE_READINESS_VERSION } = await import(coreUrl);
-if (RELEASE_READINESS_VERSION !== "0.9.3") process.exit(3);
+if (RELEASE_READINESS_VERSION !== "0.9.4") process.exit(3);
 `,
   );
   const result = runConsumer(root);

@@ -348,8 +348,10 @@ export function assertPublicReleaseVersion(context, trackedFiles, release, versi
   if (release === null) {
     fail("declare the public release ecosystems before verifying a release candidate");
   }
-  if (typeof version !== "string" || !stableVersion.test(version) ||
-      tag !== `${release.tagPrefix}${version}`) {
+  if (typeof version !== "string" || !stableVersion.test(version)) {
+    fail("enter a stable release version such as 0.4.3 in version and the full commit SHA in source_sha");
+  }
+  if (tag !== `${release.tagPrefix}${version}`) {
     fail("release version and canonical Git tag must identify the same stable version");
   }
   const check = (found, location) => {
@@ -756,10 +758,17 @@ export function publicPreflightTitle(ecosystem, version, sha) {
   return `Preflight ${ecosystem} ${version} ${sha}`;
 }
 
-export function renderPreflightSummaryStep() {
+export function renderPreflightSummaryStep(publishWorkflow) {
   // Render a self-contained step so package jobs can report inputs without
-  // checking out the runner again. Keep both patterns compatible with Bash.
+  // checking out the runner again. The release config validates the workflow
+  // filename, and the step validates the remaining shell arguments.
   const fence = "```";
+  const dispatchCommand = publishWorkflow === undefined ? "" :
+    `        'After this preflight succeeds, run this command to dispatch publish with both inputs set.' '' \\
+        '${fence}sh' "gh workflow run ${publishWorkflow} --repo github.com/$GITHUB_REPOSITORY --ref main -f version=$RELEASE_VERSION -f source_sha=$SOURCE_SHA" '${fence}' '' \\
+`;
+  const repositoryCheck = publishWorkflow === undefined ? "" :
+    ` ||\n          ! "$GITHUB_REPOSITORY" =~ ^[a-zA-Z0-9-]+/[a-zA-Z0-9_.-]+$`;
   return `- name: Show release form inputs
   shell: bash
   env:
@@ -770,7 +779,7 @@ export function renderPreflightSummaryStep() {
   run: |
     if [[ "$GITHUB_EVENT_NAME" != workflow_dispatch || "$GITHUB_REF" != refs/heads/main ||
           "$SOURCE_SHA" != "$GITHUB_SHA" || ! "$SOURCE_SHA" =~ $SHA_PATTERN ||
-          ! "$RELEASE_VERSION" =~ $VERSION_PATTERN ]]; then
+          ! "$RELEASE_VERSION" =~ $VERSION_PATTERN${repositoryCheck} ]]; then
       echo "::warning::Cannot show release inputs without a matching preflight dispatch on main." >&2
       exit 0
     fi
@@ -779,7 +788,7 @@ export function renderPreflightSummaryStep() {
       exit 0
     fi
     if ! printf '%s\\n' '## Release form inputs' '' \\
-        'Copy these values into the release form for this ecosystem once the preflight run succeeds.' '' \\
+${dispatchCommand}        'Copy these values into the release form for this ecosystem once the preflight run succeeds.' '' \\
         '**Version**' '${fence}text' "$RELEASE_VERSION" '${fence}' '' \\
         '**Source SHA**' '${fence}text' "$SOURCE_SHA" '${fence}' >>"$GITHUB_STEP_SUMMARY"; then
       echo "::warning::Could not write release inputs to the GitHub Actions summary." >&2

@@ -45,7 +45,7 @@ test("public release contract keeps every declared package and tag on one versio
   const check = (expected = version, expectedTag = tag) =>
     assertPublicReleaseVersion(context, tracked, release, expected, expectedTag);
   check();
-  assert.throws(() => check("v1.2.3"), /same stable version/u);
+  assert.throws(() => check("v1.2.3"), /enter a stable release version/u);
   assert.throws(() => check(version, "v1.2.3"), /same stable version/u);
   for (const [path, contents] of [
     ["Package.swift", 'let packageVersion = "1.2.4"\n'],
