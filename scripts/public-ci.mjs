@@ -224,9 +224,13 @@ export function readPublicCiConfig(context, trackedFiles, { selfCheck = false } 
       continue;
     }
     const lane = config.lanes[name];
-    if (!hasOnlyKeys(lane, ["workflow", "paths"]) ||
+    if (!hasOnlyKeys(lane, name === "formal" ? ["workflow", "paths", "mode"] : ["workflow", "paths"]) ||
         typeof lane.workflow !== "string" || !workflowFilename.test(lane.workflow)) {
       fail(`${PUBLIC_CI_CONFIG} lane ${name} must name a local reusable workflow`);
+    }
+    const mode = lane.mode ?? "required";
+    if (Object.hasOwn(lane, "mode") && !["required", "manual"].includes(lane.mode)) {
+      fail(`${PUBLIC_CI_CONFIG} formal mode must be required or manual`);
     }
     const path = `${workflowsDirectory}${lane.workflow}`;
     if (["ci.yml", "ci.yaml", "cla.yml", "cla.yaml"].includes(lane.workflow) || usedWorkflows.has(path)) {
@@ -247,14 +251,14 @@ export function readPublicCiConfig(context, trackedFiles, { selfCheck = false } 
       }
     }
     if (!trackedFiles.has(path)) {
-      fail(`${path} must be tracked and use the reusable-only workflow_call trigger with a verified_sha output`);
+      fail(`${path} must be tracked${mode === "manual" ? " for manual formal verification" : " and use the reusable-only workflow_call trigger with a verified_sha output"}`);
     }
     const source = context.readText(path);
     const receiptJob = reusableReceiptJob(source);
-    if (receiptJob === undefined) {
+    if (mode !== "manual" && receiptJob === undefined) {
       fail(`${path} must use the reusable-only workflow_call trigger with a verified_sha output`);
     }
-    if (/^(?:concurrency|"concurrency"|'concurrency')\s*:/mu.test(source)) {
+    if (mode !== "manual" && /^(?:concurrency|"concurrency"|'concurrency')\s*:/mu.test(source)) {
       fail(`${path} must leave workflow concurrency to ${PUBLIC_CI_WORKFLOW}`);
     }
     const workflow = context.readPublicWorkflow(path, source);
@@ -276,14 +280,14 @@ export function readPublicCiConfig(context, trackedFiles, { selfCheck = false } 
       context.assertFuzzLockfileWorkflow(path, receiptJob);
     }
     if (name === "formal") {
-      for (const script of context.assertFormalVerificationWorkflow(path, receiptJob)) {
+      for (const script of context.assertFormalVerificationWorkflow(path, receiptJob, { mode })) {
         if (!trackedFiles.has(script) || context.readText(script).trim().length === 0) {
           fail(`${script} must be a tracked, non-empty formal verification script`);
         }
       }
     }
     usedWorkflows.add(path);
-    lanes.set(name, { path, paths: [...paths].sort() });
+    lanes.set(name, { path, paths: [...paths].sort(), mode });
   }
   assertFormalCoverage(context, trackedFiles, lanes.get("formal"));
   const pathRulesBytes = [...lanes.values()].reduce((bytes, { paths }) =>
@@ -301,6 +305,9 @@ export function readPublicCiConfig(context, trackedFiles, { selfCheck = false } 
 // tested, so a push run would repeat that exact run. Release qualification
 // accepts the queue run instead, and a manual dispatch covers direct pushes.
 export function renderPublicCi(lanes, { mergeQueue = false } = {}) {
+  // Manual proofs have their own dispatch and never enter the required plan.
+  // Omitting them also prevents a green gate from implying they ran.
+  lanes = new Map([...lanes].filter(([, lane]) => lane.mode !== "manual"));
   const paths = Object.fromEntries([...lanes].map(([name, lane]) => [name, lane.paths]));
   const usesScope = [...lanes.values()].some((lane) => lane.paths.length > 0);
   const publicRepository = "github.repository_owner == 'reallyme' && toJSON(github.event.repository.private) == 'false' && (github.event.repository.visibility == null || github.event.repository.visibility == 'public')";
@@ -396,7 +403,7 @@ export function assertPublicCi(context, trackedFiles, options) {
     context.fail(`${PUBLIC_CI_WORKFLOW} differs from the standard CI workflow. Regenerate it with --render-ci`);
   }
   const attributes = [...trackedFiles].filter((path) => checkoutAttributes.test(path));
-  const coverage = new Map([...lanes.values()].map(({ path, paths }) => [
+  const coverage = new Map([...lanes.values()].filter((lane) => lane.mode !== "manual").map(({ path, paths }) => [
     path,
     paths.length === 0 ? [] : [...sharedPaths, ...attributes, ...paths],
   ]));
@@ -407,7 +414,9 @@ export function assertPublicCi(context, trackedFiles, options) {
 // scope job does, so it reuses these rules rather than re-deriving them. An
 // unscoped lane runs on every candidate and can never be carried forward.
 export function describeCiLanes(lanes) {
-  return [...lanes].map(([name, { paths }]) => ({
+  // Preflight uses only the lanes represented by Required CI. A manual proof
+  // is neither a missing result nor evidence that can be carried forward.
+  return [...lanes].filter(([, lane]) => lane.mode !== "manual").map(([name, { paths }]) => ({
     name,
     scoped: paths.length > 0,
     inputsChanged: (changedPaths) => paths.length === 0 || changedPaths.some((path) =>

@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 ReallyMe Technologies Limited
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+name: Formal verification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  proofs:
+    name: Verify formal properties
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Verify proof obligations
+        shell: bash
+        working-directory: .
+        run: |
+          test "$(git rev-parse --verify HEAD)" = "$GITHUB_SHA"
+          git diff --no-ext-diff --exit-code "$GITHUB_SHA" --
+          bash -e -o pipefail scripts/check-formal.sh
+          test "$(git rev-parse --verify HEAD)" = "$GITHUB_SHA"
+          git diff --no-ext-diff --exit-code "$GITHUB_SHA" --

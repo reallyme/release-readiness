@@ -30,6 +30,7 @@ const defaultConfig = {
 };
 const formalPath = ".github/workflows/formal-verification.yml";
 const formalTemplate = readFileSync(new URL("../templates/formal-verification.yml", import.meta.url), "utf8");
+const manualFormalTemplate = readFileSync(new URL("../templates/formal-verification-manual.yml", import.meta.url), "utf8");
 const workflowContext = createReleaseReadinessContext({ scriptUrl: import.meta.url, requireTrackedFiles: false });
 const parse = (mutate = () => {}) => {
   const config = structuredClone(defaultConfig);
@@ -46,9 +47,9 @@ const parse = (mutate = () => {}) => {
     readPublicWorkflow: workflowContext.readPublicWorkflow,
     assertPublicPolicyWorkflow: () => {},
     trackedKaniHarnesses: () => [...trackedFiles].filter((path) => path.endsWith("_proofs.rs")),
-    assertFormalVerificationWorkflow: (path, receipt) => {
+    assertFormalVerificationWorkflow: (path, receipt, { mode }) => {
       assert.equal(path, formalPath);
-      assert.equal(receipt, "proofs");
+      assert.equal(receipt, mode === "manual" ? undefined : "proofs");
       return ["scripts/check-formal.sh"];
     },
   }, trackedFiles);
@@ -63,6 +64,12 @@ const formalConfig = (config, trackedFiles, sources) => {
   sources.set(formalPath, formalTemplate);
   sources.set("scripts/check-formal.sh", "cargo kani");
   config.lanes.formal = { workflow: "formal-verification.yml", paths: ["formal/"] };
+};
+
+const manualFormalConfig = (config, trackedFiles, sources) => {
+  formalConfig(config, trackedFiles, sources);
+  config.lanes.formal.mode = "manual";
+  sources.set(formalPath, manualFormalTemplate);
 };
 
 test("standard CI renders deterministically and rejects unsupported or untracked lanes", () => {
@@ -188,6 +195,92 @@ test("formal lane requires the model inputs and excludes duplicate required work
   }
 });
 
+test("manual proofs are explicitly configured and excluded from both CI plans and release evidence", () => {
+  const { lanes } = parse(manualFormalConfig);
+  const rendered = renderPublicCi(lanes);
+  assert.equal(rendered, renderPublicCi(parse().lanes));
+  assert.doesNotMatch(rendered, /\n  formal:|"formal":|uses: .*formal-/u);
+  assert.deepEqual(describeCiLanes(lanes).map(({ name }) => name), ["policy", "swift"]);
+  assert.equal(lanes.get("formal").mode, "manual");
+
+  const unscoped = parse((config, files, sources) => {
+    manualFormalConfig(config, files, sources);
+    delete config.lanes.swift.paths;
+  }).lanes;
+  assert.match(renderPublicCi(unscoped), /needs: \[policy, swift\]/u);
+  assert.doesNotMatch(renderPublicCi(unscoped), /Identify CI lanes|formal/u);
+  assert.deepEqual(describeCiLanes(unscoped).map(({ scoped }) => scoped), [false, false]);
+  assert.equal(renderPublicCi(lanes, { mergeQueue: true }), renderPublicCi(parse().lanes, { mergeQueue: true }));
+  parse((config, files, sources) => {
+    manualFormalConfig(config, files, sources);
+    sources.set(formalPath, `concurrency: formal-\${{ github.ref }}\n${manualFormalTemplate}`);
+  });
+
+  const explicit = parse((config, files, sources) => {
+    formalConfig(config, files, sources);
+    config.lanes.formal.mode = "required";
+  });
+  assert.equal(renderPublicCi(explicit.lanes), renderPublicCi(parse(formalConfig).lanes));
+  assert.equal(describeCiLanes(explicit.lanes).at(-1).name, "formal");
+  for (const mode of [null, true, "optional", "", {}, []]) {
+    assert.throws(() => parse((config, files, sources) => {
+      formalConfig(config, files, sources);
+      config.lanes.formal.mode = mode;
+    }), /formal mode must be required or manual/u);
+  }
+  for (const name of ["policy", "swift"]) {
+    assert.throws(() => parse((config) => { config.lanes[name].mode = "manual"; }), /local reusable workflow/u);
+  }
+  assert.throws(() => parse((config, files, sources) => {
+    manualFormalConfig(config, files, sources);
+    files.add("crates/native/input_proofs.rs");
+  }), /cover changes to crates\/native\/input_proofs\.rs/u);
+});
+
+test("manual formal workflows verify every proof at the dispatch SHA without a reusable receipt", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "reallyme-manual-formal-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const verify = (source, mode = "manual", receipt) => {
+    writeFileSync(join(root, "formal.yml"), source);
+    return spawnSync(process.execPath, ["--input-type=module", "-e", `
+      import { createReleaseReadinessContext } from ${JSON.stringify(import.meta.resolve("../core.mjs"))};
+      const context = createReleaseReadinessContext({ scriptUrl: import.meta.url, repoRoot: "." });
+      context.assertFormalVerificationWorkflow("formal.yml", ${JSON.stringify(receipt)}, { mode: ${JSON.stringify(mode)} });
+    `], { cwd: root, encoding: "utf8" });
+  };
+  for (const source of [
+    manualFormalTemplate,
+    manualFormalTemplate.replace("on:\n  workflow_dispatch:", "on: workflow_dispatch"),
+    manualFormalTemplate.replaceAll("\n", "\r\n"),
+    manualFormalTemplate + manualFormalTemplate.slice(manualFormalTemplate.indexOf("  proofs:\n")).replace("  proofs:\n", "  smt:\n"),
+  ]) {
+    const result = verify(source);
+    assert.equal(result.status, 0, result.stderr);
+  }
+  for (const [source, diagnostic, mode, receipt] of [
+    [formalTemplate, /only workflow_dispatch/u],
+    [manualFormalTemplate.replace("  workflow_dispatch:", "  push:\n  workflow_dispatch:"), /only workflow_dispatch/u],
+    [manualFormalTemplate.replace("  workflow_dispatch:", "  workflow_dispatch:\n    inputs:\n      source_sha:\n        type: string"), /only workflow_dispatch/u],
+    [manualFormalTemplate + "on: workflow_dispatch\n", /only workflow_dispatch/u],
+    [manualFormalTemplate, /only workflow_dispatch/u, "manual", "proofs"],
+    [manualFormalTemplate.replace("    timeout-minutes: 90", "    timeout-minutes: 90\n    outputs:\n      verified_sha: \${{ github.sha }}"), /must not report reusable verified_sha/u],
+    [manualFormalTemplate.replace("    timeout-minutes: 90", "    timeout-minutes: 90\n    outputs: { verified_sha: true }"), /must not report reusable verified_sha/u],
+    [manualFormalTemplate.replace("    timeout-minutes: 90", "    timeout-minutes: 90\n    if: false"), /must run without a condition/u],
+    [manualFormalTemplate.replace("    timeout-minutes: 90", "    timeout-minutes: 90\n    continue-on-error: true"), /propagate failures/u],
+    [manualFormalTemplate.replace("    timeout-minutes: 90", "    timeout-minutes: 0"), /explicit timeout/u],
+    [manualFormalTemplate.replace("        shell: bash", "        if: false\n        shell: bash"), /unconditionally/u],
+    [manualFormalTemplate.replace("bash -e -o pipefail scripts/check-formal.sh", "bash -e -o pipefail scripts/check-formal.sh || true"), /must verify the checked out SHA/u],
+    [manualFormalTemplate.replace("persist-credentials: false", "persist-credentials: false\n          ref: main"), /must check out the candidate SHA/u],
+    [manualFormalTemplate.replace("contents: read", "contents: write"), /permissions changed/u],
+    [manualFormalTemplate, /formal mode must be required or manual/u, "optional"],
+    [manualFormalTemplate, /must use block-form job IDs/u, "required"],
+  ]) {
+    const result = verify(source, mode, receipt);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, diagnostic);
+  }
+});
+
 test("the formal template requires every proof job, Bash failure propagation and an exact-SHA result", (t) => {
   const root = mkdtempSync(join(tmpdir(), "reallyme-formal-ci-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -288,7 +381,10 @@ test("formal proof step propagates failure, checks the checkout and discovers tr
   const sha = git("rev-parse", "HEAD");
   mkdirSync(join(root, "scripts"));
   writeFileSync(join(root, proof), "false | cat\nprintf '%s\\n' proved\n");
-  const run = (candidate) => spawnSync("bash", ["-e", "-o", "pipefail", "-c", shellScript(formalTemplate, 1)], {
+  // Both entry points execute the same checked proof command and retain its
+  // output in the Actions job log, including when a piped verifier fails.
+  assert.equal(shellScript(manualFormalTemplate, 1), shellScript(formalTemplate, 1));
+  const run = (candidate) => spawnSync("bash", ["-e", "-o", "pipefail", "-c", shellScript(manualFormalTemplate, 1)], {
     cwd: root, encoding: "utf8", env: { ...process.env, GITHUB_SHA: candidate },
   });
   const failed = run(sha);

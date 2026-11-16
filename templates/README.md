@@ -51,6 +51,11 @@ in a merge-queue repository.
 Use [`formal-verification.yml`](formal-verification.yml) as the reusable
 workflow for the `formal` lane. Supply `scripts/check-formal.sh` or point the
 step at an existing tracked Bash proof script under `scripts/`.
+For an expensive suite, set the lane's `"mode": "manual"` and use
+[`formal-verification-manual.yml`](formal-verification-manual.yml) instead.
+It runs only when dispatched and is outside `Required CI` and release preflight
+qualification. Keep tests, linting, boundary checks, and generated-code checks
+in the required lanes.
 See the [CI contract](../docs/public-ci.md#formal-verification)
 for path scope, job results, and how to wire several proof jobs together.
 

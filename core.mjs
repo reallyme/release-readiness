@@ -11,7 +11,7 @@ import { spawnSync } from "node:child_process";
 // This module is the release package's shared policy core. The public runner
 // supplies this exact immutable module to consumers so release-critical checks
 // cannot drift independently from the pinned package revision.
-export const RELEASE_READINESS_VERSION = "0.9.5";
+export const RELEASE_READINESS_VERSION = "0.9.6";
 
 const DEFAULT_FAILURE_PREFIX = "release readiness check failed";
 const MAX_PRODUCTION_SOURCE_LINES = 500;
@@ -5325,7 +5325,22 @@ export function createReleaseReadinessContext(options) {
     return result.stdout.split("\0").filter(Boolean);
   };
 
-  const assertFormalVerificationWorkflow = (path, receiptName) => {
+  const assertFormalVerificationWorkflow = (path, receiptName, { mode = "required" } = {}) => {
+    if (!["required", "manual"].includes(mode)) {
+      fail(`${path} formal mode must be required or manual`);
+    }
+    const manual = mode === "manual";
+    if (manual) {
+      const source = readText(path).replaceAll("\r\n", "\n");
+      const normalized = source.replaceAll(/^[ \t]*#.*\n|^[ \t]*\n/gmu, "");
+      const triggers = [...source.matchAll(/^(?:on|'on'|"on")\s*:/gmu)];
+      // The dispatch ref defines github.sha. There is no second source input
+      // whose checkout could disagree with the run's recorded candidate.
+      if (receiptName !== undefined || triggers.length !== 1 ||
+          !/^on:(?: workflow_dispatch\n|\n  workflow_dispatch:\n)(?=[^ \t]|$)/mu.test(normalized)) {
+        fail(`${path} manual formal verification must use only workflow_dispatch without inputs or a reusable receipt`);
+      }
+    }
     assertWorkflowPermissionsPolicy({ path, workflow: { contents: "read" } });
     const jobs = extractWorkflowJobs(path);
     const lines = jobs[0]?.lines ?? [];
@@ -5338,24 +5353,29 @@ export function createReleaseReadinessContext(options) {
       .filter((line) => /^ {2}[^ #\t]/u.test(line));
     const jobNames = new Set(jobs.map((job) => job.name));
     const receipt = jobs.find((job) => job.name === receiptName);
-    if (receipt === undefined || jobNames.size !== jobs.length ||
+    if ((!manual && receipt === undefined) || jobs.length === 0 || jobNames.size !== jobs.length ||
         topLevelJobs.length !== jobs.length ||
         topLevelJobs.some((line) => !/^  [A-Za-z0-9_-]+:[ \t]*$/u.test(line))) {
-      fail(`${path} must use block-form job IDs and define a distinct job that reports verified_sha`);
+      fail(`${path} must use block-form job IDs${manual ? " for every proof job" : " and define a distinct job that reports verified_sha"}`);
     }
-    const receiptOutputs = receipt.lines.slice(receipt.start + 1, receipt.end);
-    const outputBlocks = [...receiptOutputs.keys()].filter((index) =>
-      /^ {4}(?:outputs|"outputs"|'outputs'):/u.test(receiptOutputs[index]));
-    if (outputBlocks.length !== 1 || !/^ {4}outputs:[ \t]*$/u.test(receiptOutputs[outputBlocks[0]]) ||
-        !/^ {6}verified_sha: \$\{\{ github\.sha \}\}[ \t]*$/u.test(receiptOutputs[outputBlocks[0] + 1] ?? "") ||
-        receiptOutputs.filter((line) => /^ {6}(?:verified_sha|"verified_sha"|'verified_sha'):/u.test(line)).length !== 1) {
-      fail(`${path} job ${receiptName} must report the candidate with outputs.verified_sha`);
+    if (!manual) {
+      const receiptOutputs = receipt.lines.slice(receipt.start + 1, receipt.end);
+      const outputBlocks = [...receiptOutputs.keys()].filter((index) =>
+        /^ {4}(?:outputs|"outputs"|'outputs'):/u.test(receiptOutputs[index]));
+      if (outputBlocks.length !== 1 || !/^ {4}outputs:[ \t]*$/u.test(receiptOutputs[outputBlocks[0]]) ||
+          !/^ {6}verified_sha: \$\{\{ github\.sha \}\}[ \t]*$/u.test(receiptOutputs[outputBlocks[0] + 1] ?? "") ||
+          receiptOutputs.filter((line) => /^ {6}(?:verified_sha|"verified_sha"|'verified_sha'):/u.test(line)).length !== 1) {
+        fail(`${path} job ${receiptName} must report the candidate with outputs.verified_sha`);
+      }
     }
     const stepsByJob = Map.groupBy(extractWorkflowSteps(path), (step) => step.job);
     const scripts = new Set();
     for (const job of jobs) {
       const location = `${path} job ${job.name}`;
       const readProperty = (key) => parseWorkflowJobScalar(path, job, key);
+      if (manual && readProperty("outputs") !== null) {
+        fail(`${location} manual formal verification must not report reusable verified_sha receipts or other job outputs`);
+      }
       const minutes = readProperty("timeout-minutes");
       if (minutes === null || !/^[1-9][0-9]*$/u.test(minutes) || Number(minutes) > 360) {
         fail(`${location} must have an explicit timeout of 1 to 360 minutes`);

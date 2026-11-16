@@ -36,10 +36,12 @@ on a pilot PR.
 The `policy` lane always runs. Use `code`, `proto`, `security`, `fuzz`, `wasm`,
 `swift`, `android`, `conformance`, or `formal` where the repository needs those checks.
 Tracked protobuf schemas require a `proto` lane, including in repos without SDKs.
-Each lane names a tracked reusable workflow in `.github/workflows/`. Keep the
+Each required lane names a tracked reusable workflow in `.github/workflows/`. Keep the
 commands in that workflow or its existing local scripts so developers can run
 the same verification locally. Remove the adapter's standalone triggers and
 workflow-level concurrency when moving it under the shared workflow.
+The `formal` lane can instead use [manual mode](#manual-formal-verification)
+for an expensive proof suite.
 
 The shared workflow runs for PRs targeting `main`, pushes to `main`, merge queue
 candidates, and manual dispatches. It cancels superseded PR runs. The scope job
@@ -52,14 +54,15 @@ sources and fixtures.
 
 Changes to the lane configuration, `.github/workflows/`, `.github/actions/`,
 `.github/scripts/`, `scripts/`, and the shared Rust, npm, and Buf inputs activate
-every lane. A `.gitattributes` change anywhere in the tree also activates every
-lane because it can change the bytes Git checks out. Shell commands can resolve
+every required lane. A `.gitattributes` change anywhere in the tree also activates
+every required lane because it can change the bytes Git checks out. Shell commands can resolve
 helpers through environment variables, working directories, or other scripts,
 so changes under these automation directories always trigger the checks. List
 build and verification inputs outside those paths in the lanes that use them.
 Repository metadata such as
 issue templates and `CODEOWNERS` only activates unscoped lanes. An unavailable
-comparison base activates every lane. Manual dispatch runs the full suite.
+comparison base activates every required lane. Dispatching `CI` runs every
+required lane. A formal lane in manual mode has its own dispatch.
 
 Set `"mergeQueue": true` when the repository merges through a GitHub merge
 queue. The queue tests the exact commit that `main` then fast-forwards to, so
@@ -292,7 +295,15 @@ tests. [GitHub artifact download inputs](https://github.com/actions/download-art
 
 Add a `formal` lane as part of merging a repository's formal-methods work.
 Repositories with `formal-verification.yml`, `formal-methods.yml`, tracked
-TLA+ or Tamarin models, or tracked Kani proof attributes must declare the lane. Start with the
+TLA+ or Tamarin models, or tracked Kani proof attributes must declare the lane.
+The default mode is `required`, which preserves automatic verification. Use
+`"mode": "manual"` for a full proof suite that would make routine CI too slow.
+Tests, strict linting, boundary checks, and generated-code freshness checks
+remain in the ordinary required lanes in either mode.
+
+### Required formal verification
+
+Start with the
 [formal verification workflow](../templates/formal-verification.yml), or adapt
 the branch's existing jobs. Move required proof jobs out of any independently
 triggered workflow when enabling the lane.
@@ -313,13 +324,59 @@ in a separately named scheduled or manual workflow if needed. Release preflight
 reuses the exact-SHA CI result, or an unchanged earlier proof result when the
 lane was skipped.
 
+### Manual formal verification
+
+Declare the same lane with `"mode": "manual"` and use the
+[manual formal workflow](../templates/formal-verification-manual.yml) as its
+tracked workflow. For example, this is the `formal` entry under `lanes`:
+
+```json
+"formal": {
+  "workflow": "formal-methods.yml",
+  "mode": "manual"
+}
+```
+
+The workflow has only `workflow_dispatch`, without a reusable output or source
+input. Choose the branch in GitHub's Run workflow menu, or dispatch a branch or tag
+with `gh workflow run formal-methods.yml --ref main`. The event captures the
+candidate SHA. Every proof job checks out and verifies that exact SHA, even
+if the selected branch advances during the run. The workflow must exist on the
+default branch to dispatch it.
+[GitHub workflow dispatch](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch)
+
+Manual proofs are absent from generated `ci.yml`, `Required CI`, and release
+preflight qualification. A green routine CI or preflight result makes no claim
+that formal verification ran. Run the suite before releases and after
+significant changes to verified logic, and review the successful dispatch for
+the intended candidate. This timing is repository practice and is not an
+automatic release gate in manual mode. Dispatching ordinary `CI` does not run
+manual proofs.
+
+Use an appropriate explicit timeout for the full suite. Independent proof jobs
+can run in parallel. Every job must execute its proof step unconditionally and
+propagate failures. Preserve verifier output in the workflow's job logs. If
+scripts write additional proof reports, upload them with a pinned artifact
+action using `if: always()` so failures retain their diagnostics too.
+
+To adopt manual mode, set the lane's mode, replace its reusable trigger with
+the manual template's trigger, and remove its `verified_sha` outputs and any
+receipt-only aggregate job. Keep verifier setup and proof scripts. Omit `paths`
+for a suite that spans the repository. Existing `paths` may remain to document
+proof inputs and must still cover tracked harnesses and models, but never
+schedule a manual run. Regenerate `ci.yml` with `--render-ci`, then run
+`--check-workflows` and `actionlint`. Switching back to `required` also requires
+restoring the reusable trigger and verified result, then regenerating CI.
+
+### Proof execution in either mode
+
 Use the template's unconditional `Verify proof obligations` step. It checks the
 candidate SHA and tracked files before and after running a Bash script under
 `scripts/` with fail-fast and pipeline failure handling. Keep verifier and
 result checks together in that script so developers can run the same command
-locally. A single proof job returns `verified_sha` directly.
-When there are several jobs, make a final job depend on all of them and use
-the default success condition. The job that reports `verified_sha` sets its
+locally. In required mode, a single proof job returns `verified_sha` directly.
+When there are several required jobs, make a final job depend on all of them
+and use the default success condition. The job that reports `verified_sha` sets its
 output to `github.sha`. Each proof job checks out the event candidate with the
 pinned checkout action and `persist-credentials: false`. Use read-only
 permissions and named setup steps.

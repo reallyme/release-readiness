@@ -25,6 +25,7 @@ const publicRepoPolicyPath = fileURLToPath(new URL("../scripts/public-repo-polic
 const publicCiPath = fileURLToPath(new URL("../scripts/public-ci.mjs", import.meta.url));
 const publicReleasePath = fileURLToPath(new URL("../scripts/public-release.mjs", import.meta.url));
 const claTemplate = readFileSync(new URL("../templates/cla.yaml", import.meta.url), "utf8");
+const manualFormalTemplate = readFileSync(new URL("../templates/formal-verification-manual.yml", import.meta.url), "utf8");
 const claPath = ".github/workflows/cla.yaml";
 const mavenBundlePath = "scripts/maven-central-bundle.local.sh";
 const mavenBundleFixture = "#!/usr/bin/env bash\nexit 0\n";
@@ -149,6 +150,34 @@ const installStandardCi = (root, additionalLanes = {}, release) => {
   stageFiles(root, ".github/workflows/ci.yml");
   return render.stdout;
 };
+
+test("the runner accepts manual formal proofs without adding them to Required CI", (t) => {
+  const root = createConsumer();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, ".github/workflows"), { recursive: true });
+  writeFileSync(join(root, claPath), claTemplate);
+  writeFileSync(join(root, "harness.rs"), "#[kani::proof]\nfn verify() {}\n");
+  writeFileSync(join(root, "scripts/check-formal.sh"), "cargo kani --locked\n");
+  const workflow = join(root, ".github/workflows/formal-methods.yml");
+  writeFileSync(workflow, manualFormalTemplate);
+  stageFiles(root, ".");
+  const generated = installStandardCi(root, { formal: { workflow: "formal-methods.yml", mode: "manual" } });
+  assert.doesNotMatch(generated, /formal|Identify CI lanes/u);
+  assert.match(generated, /needs: \[policy\]/u);
+  const check = () => runConsumer(root, runnerPath, { RELEASE_READINESS_PUBLIC_REPO: "true" }, ["--check-workflows"]);
+  assert.equal(check().status, 0);
+  writeFileSync(workflow, manualFormalTemplate.replace("  workflow_dispatch:", "  push:\n  workflow_dispatch:"));
+  const automatic = check();
+  assert.equal(automatic.status, 1);
+  assert.match(automatic.stderr, /only workflow_dispatch/u);
+  writeFileSync(workflow, manualFormalTemplate);
+  writeFileSync(join(root, ".github/release-readiness.json"), JSON.stringify({
+    schema: 1, lanes: { policy: { workflow: "policy.yml" } },
+  }));
+  const undeclared = check();
+  assert.equal(undeclared.status, 1);
+  assert.match(undeclared.stderr, /must declare a formal lane/u);
+});
 
 test("public ReallyMe Actions runs require the tracked canonical CLA workflow", (t) => {
   const root = createConsumer();
@@ -426,6 +455,8 @@ test("release command binds versions, workflow identity and GitHub preflight evi
   verify:
     runs-on: ubuntu-24.04
 `);
+  writeFileSync(join(root, ".github/workflows/formal-methods.yml"), manualFormalTemplate);
+  writeFileSync(join(root, "scripts/check-formal.sh"), "cargo kani --locked\n");
   for (const [ecosystem, phase, workflow] of [
     ["npm", "preflight", preflight], ["npm", "publish", publish],
     ["maven", "preflight", mavenPreflight], ["maven", "publish", mavenPublish],
@@ -433,7 +464,10 @@ test("release command binds versions, workflow identity and GitHub preflight evi
     writeFileSync(join(root, ".github/workflows", workflow), releaseWorkflow(ecosystem, phase));
   }
   stageFiles(root, ".");
-  installStandardCi(root, { android: { workflow: "android.yml", paths: ["build.gradle.kts"] } }, {
+  installStandardCi(root, {
+    android: { workflow: "android.yml", paths: ["build.gradle.kts"] },
+    formal: { workflow: "formal-methods.yml", mode: "manual", paths: ["scripts/check-formal.sh"] },
+  }, {
     tagPrefix: "v", npm: { preflight, publish, manifests: ["package.json"], artifacts: ["npm-{version}-{sha}"] },
     maven: { preflight: mavenPreflight, publish: mavenPublish, manifests: ["build.gradle.kts"], artifacts: ["maven"] },
   });
@@ -522,6 +556,8 @@ process.stdout.write(JSON.stringify([page]));
   const shaInVersionField = check("publish", {}, "npm", sha);
   assert.equal(shaInVersionField.status, 1);
   assert.match(shaInVersionField.stderr, /release version such as 0\.4\.3 in version and the full commit SHA in source_sha/u);
+  // No formal job or historical proof run exists. Manual proofs are outside
+  // release qualification, while Android and publication evidence stay required.
   for (const phase of ["preflight", "publish"]) {
     const result = check(phase);
     assert.equal(result.status, 0, result.stderr);
@@ -763,7 +799,7 @@ test("runner supplies its immutable package core to the consumer", () => {
     `const coreUrl = process.env.RELEASE_READINESS_CORE_URL;
 if (typeof coreUrl !== "string") process.exit(2);
 const { RELEASE_READINESS_VERSION } = await import(coreUrl);
-if (RELEASE_READINESS_VERSION !== "0.9.5") process.exit(3);
+if (RELEASE_READINESS_VERSION !== "0.9.6") process.exit(3);
 `,
   );
   const result = runConsumer(root);

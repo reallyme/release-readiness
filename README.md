@@ -71,7 +71,7 @@ current marker is:
 ```js
 assertContains(
   "core.mjs",
-  'RELEASE_READINESS_VERSION = "0.9.5"',
+  'RELEASE_READINESS_VERSION = "0.9.6"',
 );
 ```
 
@@ -106,7 +106,7 @@ Other exact requirements are intentional toolchain and release contracts:
 | ReallyMe Buffa runtime and generators | Exact workflow `BUFFA_VERSION` and matching Cargo requirement for `reallyme-buffa` | Update the workflow, Cargo requirement, lockfile where used, and generated output together |
 | cargo-fuzz template | Exact workflow `CARGO_FUZZ_VERSION` | Update the workflow value; both install lanes use that variable |
 | Node runtime | 26 in this repository and template; consumer minimum and package engine `>=26` | Review a runtime-major migration in this repository's workflow, checker, template, and package engine |
-| Release-readiness package | 0.9.5 | Publish a new package revision and update consumer pins |
+| Release-readiness package | 0.9.6 | Publish a new package revision and update consumer pins |
 
 Dependabot does not update version literals embedded in checker source. The
 shared core validates Buf, the ReallyMe Buffa toolchain, and template cargo-fuzz
@@ -173,8 +173,10 @@ The public-repo policy requires the [standard CI workflow](docs/public-ci.md)
 and [CLA workflow](templates/README.md#public-repository-cla) in public ReallyMe
 repositories. The runner reads repository visibility from the GitHub Actions
 event. Run `--check-workflows` with `RELEASE_READINESS_PUBLIC_REPO=true` to check
-the workflow wiring locally. Repositories with formal proofs or models use the
-[formal verification lane](docs/public-ci.md#formal-verification).
+the workflow wiring locally. Repositories with formal proofs or models declare
+the [formal verification lane](docs/public-ci.md#formal-verification). It runs
+automatically by default. Set `"mode": "manual"` for an expensive proof suite
+that should run only on demand.
 
 For a new Rust/protobuf repository, start from
 [`templates/check_release_readiness.mjs`](templates/check_release_readiness.mjs)
