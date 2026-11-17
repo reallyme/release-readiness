@@ -29,10 +29,12 @@ target/
 **/.secrets/
 
 # Local developer state
-/AGENTS.md
+AGENTS.md
 /matrix.md
-/.claude/
-/.codex/
+.claude/
+.codex/
+.local/
+.build/
 
 # Generated artifacts
 /coverage/
@@ -68,6 +70,8 @@ proptest-regressions/
 **/*.capnp.rs
 
 # JavaScript tooling
+__pycache__/
+*.py[cod]
 node_modules/
 npm-debug.log*
 yarn-debug.log*

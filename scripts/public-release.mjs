@@ -127,6 +127,7 @@ export function readPublicRelease(context, trackedFiles, config, ciWorkflows) {
         fail(`${path} must always fail closed when the release candidate cannot be verified`);
       }
       assertGatedReleaseWorkflow(context, path, step, purpose, channel);
+      assertPublicationPrivacyWorkflow(context, path);
       const lastStep = purpose === "preflight" ? assertPreflightReceiptStep(context, path, step) : step;
       if (context.readText(path).split(/\r?\n/u).slice(step.index + 1, lastStep.end).some((line) =>
         new RegExp(`^ {${step.indent}}-\\s+(?!name:)`, "u").test(line))) {
@@ -160,6 +161,45 @@ export function readPublicRelease(context, trackedFiles, config, ciWorkflows) {
   }
   if (otherWorkflows.size > 0) context.fail(`declare standalone release workflows in otherReleases: ${[...otherWorkflows].join(", ")}`);
   return { channels, tagOwner, tagPrefix: release.tagPrefix };
+}
+
+export function assertPublicationPrivacyWorkflow(context, path) {
+  const steps = context.extractWorkflowSteps(path);
+  const workflow = context.readPublicWorkflow(path);
+  const command = 'node .release-readiness/scripts/repository-privacy.mjs --artifact "$PUBLICATION_PATH"';
+  const properties = (step) => workflow.block({ value: "", index: step.index, end: step.end }, step.indent + 2);
+  const input = (step, mapping, key) => {
+    const field = workflow.block(properties(step).get(mapping), step.indent + 4).get(key);
+    if (field === undefined) return undefined;
+    if (!["|", "|-"].includes(field.value)) return workflow.value(field);
+    const indent = " ".repeat(step.indent + 6);
+    const lines = workflow.lines.slice(field.index + 1, field.end);
+    if (lines.some((line) => line.trim().length > 0 && !line.startsWith(indent))) {
+      context.fail(`${path} publication paths must use literal lines with canonical indentation`);
+    }
+    return lines.map((line) => line.slice(indent.length)).join("\n").trimEnd();
+  };
+  for (const upload of steps.filter((step) => /^actions\/upload-artifact@/u.test(step.uses ?? ""))) {
+    const publication = input(upload, "with", "path");
+    const jobSteps = steps.filter((step) => step.job === upload.job);
+    const check = jobSteps[jobSteps.indexOf(upload) - 1];
+    if (typeof publication !== "string" || publication.length === 0 ||
+        upload.condition !== null || (upload.continueOnError !== null && upload.continueOnError !== "false") ||
+        check?.name !== "Verify publication privacy" ||
+        ![command, `${command} --strip-components 1`].includes(check.run?.trim()) ||
+        check.condition !== null || check.uses !== null ||
+        (check.continueOnError !== null && check.continueOnError !== "false") ||
+        (check.workingDirectory !== null && check.workingDirectory !== ".")) {
+      context.fail(`${path} every artifact upload must immediately follow an unconditional Verify publication privacy step for its exact path`);
+    }
+    if (input(check, "env", "PUBLICATION_PATH") !== publication) {
+      context.fail(`${path} Verify publication privacy must bind PUBLICATION_PATH to the following upload's exact path`);
+    }
+    if (workflow.value(properties(check).get("shell")) !== "bash") {
+      context.fail(`${path} Verify publication privacy must use shell: bash and one explicit env block`);
+    }
+    context.assertWorkflowUsesStepPinnedTo(path, upload.name, "actions/upload-artifact", upload.job);
+  }
 }
 
 function assertMavenBundleEntry(context, trackedFiles) {

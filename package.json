@@ -1,6 +1,6 @@
 {
   "name": "@reallyme/release-readiness",
-  "version": "0.9.6",
+  "version": "0.9.7",
   "private": true,
   "type": "module",
   "description": "Shared release-readiness guardrails for ReallyMe repositories.",
@@ -16,13 +16,17 @@
     "scripts/public-ci.mjs",
     "scripts/public-release.mjs",
     "scripts/public-repo-policy.mjs",
+    "scripts/repository-privacy.mjs",
+    "scripts/publication-paths.py",
     "scripts/run-consumer-check.mjs",
     "scripts/android-publication.mjs",
     "scripts/android-runtime.mjs",
     "templates/"
   ],
   "scripts": {
-    "check": "node --check core.mjs && node --check scripts/check_release_readiness.mjs && node --check scripts/public-ci.mjs && node --check scripts/public-release.mjs && node --check scripts/public-repo-policy.mjs && node --check scripts/run-consumer-check.mjs && node --check scripts/android-publication.mjs && node --check scripts/android-runtime.mjs && node --test test/*.test.mjs && node scripts/check_release_readiness.mjs"
+    "privacy:install-hooks": "node scripts/repository-privacy.mjs --install-hooks",
+    "prepack": "node scripts/repository-privacy.mjs --npm-package",
+    "check": "node --check scripts/repository-privacy.mjs && node --check core.mjs && node --check scripts/check_release_readiness.mjs && node --check scripts/public-ci.mjs && node --check scripts/public-release.mjs && node --check scripts/public-repo-policy.mjs && node --check scripts/run-consumer-check.mjs && node --check scripts/android-publication.mjs && node --check scripts/android-runtime.mjs && node --test test/*.test.mjs && node scripts/check_release_readiness.mjs"
   },
   "engines": {
     "node": ">=26"

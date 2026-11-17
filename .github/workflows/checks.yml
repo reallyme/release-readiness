@@ -29,6 +29,8 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: "26"
+      - name: Check repository privacy
+        run: node scripts/repository-privacy.mjs --staged
       - name: Run release readiness checks
         run: npm run check
       - name: Record verified source

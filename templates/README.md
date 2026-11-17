@@ -224,3 +224,9 @@ equal or shrink, but it may not grow or exceed 500 production/example lines or
 configured target. These ceilings cannot be raised by consumer configuration.
 Every tracked source file must be governed by the corresponding language policy
 or excluded through a matching `gen` or `generated` source prefix.
+
+## Repository privacy
+
+Use the repository-wide ignore rules, local hook installer, and artifact upload
+guard in the [privacy policy](../docs/repository-privacy.md) when adopting this
+release. Existing tracked ignored files must be untracked before CI can pass.

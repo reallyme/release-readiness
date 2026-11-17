@@ -26,12 +26,15 @@ const publicCiPath = fileURLToPath(new URL("../scripts/public-ci.mjs", import.me
 const publicReleasePath = fileURLToPath(new URL("../scripts/public-release.mjs", import.meta.url));
 const claTemplate = readFileSync(new URL("../templates/cla.yaml", import.meta.url), "utf8");
 const manualFormalTemplate = readFileSync(new URL("../templates/formal-verification-manual.yml", import.meta.url), "utf8");
+const privacyPath = fileURLToPath(new URL("../scripts/repository-privacy.mjs", import.meta.url));
+const privacyRules = ["AGENTS.md", ".claude/", ".codex/", ".local/", ".build/"].join("\n") + "\n";
 const claPath = ".github/workflows/cla.yaml";
 const mavenBundlePath = "scripts/maven-central-bundle.local.sh";
 const mavenBundleFixture = "#!/usr/bin/env bash\nexit 0\n";
 
 const createConsumer = () => {
   const root = mkdtempSync(join(tmpdir(), "reallyme-release-runner-"));
+  writeFileSync(join(root, ".gitignore"), privacyRules);
   mkdirSync(join(root, "scripts"), { recursive: true });
   writeFileSync(
     join(root, "scripts", "check_release_readiness.mjs"),
@@ -70,7 +73,12 @@ const reusableHeader = (job) => `on:
         value: \${{ jobs.${job}.outputs.verified_sha }}
 `;
 const releaseWorkflow = (ecosystem, phase, tagOwner = false) => {
-  const upload = phase === "preflight" ? `      - name: Record verified CI
+  const upload = phase === "preflight" ? `      - name: Verify publication privacy
+        shell: bash
+        env:
+          PUBLICATION_PATH: \${{ runner.temp }}/release-readiness-ci.json
+        run: node .release-readiness/scripts/repository-privacy.mjs --artifact "$PUBLICATION_PATH"
+      - name: Record verified CI
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: release-readiness-ci-\${{ github.run_attempt }}-\${{ steps.candidate.outputs.ci_run_id }}
@@ -177,6 +185,20 @@ test("the runner accepts manual formal proofs without adding them to Required CI
   const undeclared = check();
   assert.equal(undeclared.status, 1);
   assert.match(undeclared.stderr, /must declare a formal lane/u);
+});
+
+test("the runner enforces privacy before any consumer or public/private workflow check", (t) => {
+  const root = createConsumer();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, ".local"));
+  writeFileSync(join(root, ".local/private.txt"), "local fixture\n");
+  const added = spawnSync("git", ["add", "-f", ".local/private.txt"], { cwd: root, encoding: "utf8" });
+  assert.equal(added.status, 0, added.stderr);
+  for (const args of [[], ["--check-workflows"], ["--render-ci"]]) {
+    const rejected = runConsumer(root, runnerPath, {}, args);
+    assert.equal(rejected.status, 1);
+    assert.match(rejected.stderr, /repository privacy policy failed: LOCAL_ONLY_PATH/u);
+  }
 });
 
 test("public ReallyMe Actions runs require the tracked canonical CLA workflow", (t) => {
@@ -799,7 +821,7 @@ test("runner supplies its immutable package core to the consumer", () => {
     `const coreUrl = process.env.RELEASE_READINESS_CORE_URL;
 if (typeof coreUrl !== "string") process.exit(2);
 const { RELEASE_READINESS_VERSION } = await import(coreUrl);
-if (RELEASE_READINESS_VERSION !== "0.9.6") process.exit(3);
+if (RELEASE_READINESS_VERSION !== "0.9.7") process.exit(3);
 `,
   );
   const result = runConsumer(root);
@@ -878,6 +900,7 @@ test("runner-bound core remains external inside the consumer checkout", () => {
   copyFileSync(publicRepoPolicyPath, join(packageScripts, "public-repo-policy.mjs"));
   copyFileSync(publicCiPath, join(packageScripts, "public-ci.mjs"));
   copyFileSync(publicReleasePath, join(packageScripts, "public-release.mjs"));
+  copyFileSync(privacyPath, join(packageScripts, "repository-privacy.mjs"));
   writeFileSync(
     join(root, "scripts", "check_release_readiness.mjs"),
     `const { createReleaseReadinessContext } = await import(

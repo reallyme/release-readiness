@@ -16,6 +16,7 @@ import {
   writePublicPreflightReceipt, writePublicReleaseOutputs,
 } from "./public-release.mjs";
 import { assertPublicRepoPolicy } from "./public-repo-policy.mjs";
+import { assertRepositoryPrivacy, RepositoryPrivacyError } from "./repository-privacy.mjs";
 
 const MAX_CHECKER_BYTES = 524_288;
 const MAX_SHARED_CORE_BYTES = 262_144;
@@ -83,6 +84,11 @@ if (trackedFilesResult.error !== undefined || trackedFilesResult.status !== 0) {
   failure("could not enumerate Git-tracked source files");
 }
 const trackedFiles = new Set(trackedFilesResult.stdout.split("\0").filter(Boolean));
+try {
+  assertRepositoryPrivacy({ root: repositoryRoot });
+} catch (error) {
+  failure(`repository privacy policy failed: ${error instanceof RepositoryPrivacyError ? error.code : "CHECK_FAILED"}`);
+}
 const repositoryContext = createReleaseReadinessContext({
   scriptUrl: pathToFileURL(checkerPath).href,
   failurePrefix: "release readiness runner failed",
