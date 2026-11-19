@@ -3,6 +3,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 export const stableVersion = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
+const prereleaseIdentifier = "(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)";
+export const crateVersion = new RegExp(
+  `^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-${prereleaseIdentifier}(?:\\.${prereleaseIdentifier})*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$`, "u",
+);
+export const actionVersion = /^(0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){0,2}$/u;
 const sha = /^[a-f0-9]{40}$/u;
 const crateName = /^[A-Za-z0-9_-]+$/u;
 const actionName = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
@@ -50,12 +55,20 @@ export function selectStableCrate(value) {
   return versions.map((entry) => entry.num).reduce((best, version) => compareVersions(version, best) > 0 ? version : best);
 }
 
+function compareActionVersions(left, right) {
+  const normalize = (value) => {
+    if (typeof value !== "string" || value.length > 256 || !actionVersion.test(value)) reject("INVALID_ACTION_VERSION");
+    return [...value.split("."), "0", "0"].slice(0, 3).join(".");
+  };
+  return compareVersions(normalize(left), normalize(right));
+}
+
 // Tags include projects that publish stable versions without creating GitHub
 // releases. A single advertisement also avoids paginating thousands of tags.
-export function selectStableAction(output) {
+export function selectStableAction(output, { allowPartial = true } = {}) {
   const refs = new Map();
   for (const line of output.trim().split(/\r?\n/u)) {
-    const match = /^([a-f0-9]{40})\trefs\/tags\/(v?(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))(\^\{\})?$/u.exec(line);
+    const match = /^([a-f0-9]{40})\trefs\/tags\/(v?(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){0,2})(\^\{\})?$/u.exec(line);
     if (match === null) continue;
     const entry = refs.get(match[2]) ?? {};
     const field = match[3] === undefined ? "object" : "commit";
@@ -64,9 +77,13 @@ export function selectStableAction(output) {
     refs.set(match[2], entry);
   }
   const versions = [...refs].filter(([, entry]) => entry.object !== undefined)
-    .map(([tag, entry]) => ({ version: tag.replace(/^v/u, ""), sha: entry.commit ?? entry.object }));
+    .map(([tag, entry]) => ({ version: tag.replace(/^v/u, ""), sha: entry.commit ?? entry.object }))
+    .filter((entry) => allowPartial || stableVersion.test(entry.version));
   if (versions.length === 0) reject("NO_STABLE_ACTION_RELEASE");
-  versions.sort((left, right) => compareVersions(left.version, right.version));
+  // Major/minor aliases are valid action releases. Prefer the more precise
+  // tag at the same version so a moving alias cannot override a full release.
+  versions.sort((left, right) => compareActionVersions(left.version, right.version) ||
+    left.version.split(".").length - right.version.split(".").length);
   const latest = versions.at(-1);
   if (versions.some((entry) => entry.version === latest.version && entry.sha !== latest.sha)) reject("AMBIGUOUS_ACTION_RELEASE");
   return latest;
@@ -75,14 +92,14 @@ export function selectStableAction(output) {
 export function createVersionLookup(run, { fetchRegistry = fetch } = {}) {
   const requests = new Map();
   return async (kind, name) => {
-    if (!["crate", "action"].includes(kind)) reject("INVALID_DEPENDENCY_KIND");
+    if (!["crate", "action", "git"].includes(kind)) reject("INVALID_DEPENDENCY_KIND");
     if (!(kind === "crate" ? crateName : actionName).test(name)) reject("INVALID_DEPENDENCY_NAME");
     const key = `${kind}:${name.toLowerCase()}`;
     if (!requests.has(key)) {
       requests.set(key, (async () => {
-        if (kind === "action") {
+        if (kind !== "crate") {
           const result = run("git", ["ls-remote", "--tags", `https://github.com/${name}.git`]);
-          return selectStableAction(result.stdout);
+          return selectStableAction(result.stdout, { allowPartial: kind === "action" });
         }
         let response;
         try {
@@ -248,5 +265,6 @@ export function workflowDependencies(context, path, { trackedFiles } = {}) {
 export const validDependency = (value) => record(value) &&
   ["crate", "requirement", "git", "action", "action-version"].includes(value.kind) &&
   typeof value.name === "string" && (["crate", "requirement"].includes(value.kind) ? crateName : actionName).test(value.name) &&
-  typeof value.current === "string" && (["action", "git"].includes(value.kind) ? sha : value.kind === "requirement"
-    ? /^[0-9A-Za-z.,<>=~^*+ -]{1,160}$/u : stableVersion).test(value.current);
+  typeof value.current === "string" && value.current.length <= 256 &&
+  (["action", "git"].includes(value.kind) ? sha : value.kind === "requirement"
+    ? /^[0-9A-Za-z.,<>=~^*+ -]{1,160}$/u : value.kind === "crate" ? crateVersion : stableVersion).test(value.current);

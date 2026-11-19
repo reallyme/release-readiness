@@ -8,6 +8,50 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test from "node:test";
+import { createReleaseReadinessContext } from "../core.mjs";
+
+const context = createReleaseReadinessContext({ scriptUrl: import.meta.url });
+const claPath = "templates/cla.yaml";
+const steps = () => context.extractWorkflowSteps(claPath);
+
+test("CLA writes are confined to signature processing and never reach the merge queue", () => {
+  context.assertWorkflowPermissionsPolicy({
+    path: claPath,
+    workflow: { contents: "read" },
+    jobs: {
+      "cla-signatures": { actions: "write", contents: "write", "pull-requests": "write" },
+      "cla-merge-queue": { actions: "read", contents: "read", "pull-requests": "read" },
+      CLAAssistant: { contents: "none" },
+    },
+  });
+  const source = readFileSync(new URL(`../${claPath}`, import.meta.url), "utf8");
+  assert.doesNotMatch(source, /uses:\s*actions\/checkout@/u);
+  assert.match(source, /github\.event_name != 'merge_group' &&/u);
+  assert.match(source, /github\.event_name == 'merge_group' &&/u);
+  assert.match(source, /needs: \[cla-signatures, cla-merge-queue\]/u);
+  assert.match(source, /if: >-\n\s+always\(\)/u);
+});
+
+test("the required CLA result fails closed for failed, cancelled or skipped applicable work", () => {
+  const gate = steps().find((step) => step.name === "Require the applicable CLA result");
+  assert.ok(gate?.run);
+  const results = ["success", "failure", "cancelled", "skipped"];
+  for (const event of ["pull_request_target", "issue_comment", "merge_group", "push"]) {
+    for (const signatures of results) {
+      for (const queue of results) {
+        const result = spawnSync("bash", ["-c", gate.run], {
+          encoding: "utf8", timeout: 5_000,
+          env: { ...process.env, GITHUB_EVENT_NAME: event, SIGNATURE_RESULT: signatures, QUEUE_RESULT: queue },
+        });
+        assert.equal(result.error, undefined);
+        const expected = event === "merge_group"
+          ? queue === "success" && signatures === "skipped"
+          : ["pull_request_target", "issue_comment"].includes(event) && signatures === "success" && queue === "skipped";
+        assert.equal(result.status === 0, expected, `${event}/${signatures}/${queue}`);
+      }
+    }
+  }
+});
 
 const repository = "reallyme/example";
 const baseSha = "a".repeat(40);
@@ -59,8 +103,8 @@ test("the CLA merge queue verifies all PRs and fails closed on incomplete or mis
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const scriptPath = join(root, "verify.sh");
   const responsePath = join(root, "responses.json");
-  const template = readFileSync(new URL("../templates/cla.yaml", import.meta.url), "utf8");
-  const script = template.split("        run: |\n").at(-1).replace(/^ {10}/gmu, "");
+  const script = steps().find((step) => step.name === "Verify CLA checks for queued pull requests")?.run;
+  assert.equal(typeof script, "string");
   assert.match(script, /^set -euo pipefail/u);
   writeFileSync(scriptPath, script);
   writeFileSync(join(root, "gh"), `#!/bin/sh

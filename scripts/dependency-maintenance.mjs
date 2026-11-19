@@ -7,13 +7,20 @@ import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import {
-  compareVersions, createVersionLookup, DependencyMaintenanceError, gitDependency, record, reject,
+  actionVersion, compareVersions, crateVersion, createVersionLookup, DependencyMaintenanceError, gitDependency, record, reject,
   stableVersion, validDependency, workflowDependencies,
 } from "./dependency-versions.mjs";
 
 export { DependencyMaintenanceError } from "./dependency-versions.mjs";
 export const DEPENDENCY_POLICY = ".github/dependency-maintenance.json";
 const policyKeys = ["kind", "path", "name", "current", "latest", "reason", "expires"];
+const commitSha = /^[a-f0-9]{40}$/u;
+const versionLookupKind = (kind) => {
+  if (kind === "crate" || kind === "requirement") return "crate";
+  // Moving major/minor tags describe actions, not installable tool versions.
+  // Tools and Cargo Git sources both need the full stable release selector.
+  return kind === "git" || kind === "action-version" ? "git" : "action";
+};
 const onlyKeys = (value, keys) => record(value) && Object.keys(value).every((key) => keys.includes(key));
 const safePath = (path) => typeof path === "string" && path.length > 0 && !path.includes("\\") &&
   !isAbsolute(path) && !path.split("/").some((part) => ["", ".", ".."].includes(part));
@@ -28,7 +35,8 @@ export function readDependencyExceptions(context, trackedFiles, today = new Date
   for (const entry of policy.exceptions) {
     if (!onlyKeys(entry, policyKeys) || policyKeys.some((key) => !Object.hasOwn(entry, key)) || !validDependency(entry) ||
         !safePath(entry.path) || !trackedFiles.has(entry.path) ||
-        typeof entry.latest !== "string" || !stableVersion.test(entry.latest) ||
+        typeof entry.latest !== "string" || !(stableVersion.test(entry.latest) ||
+          (entry.kind === "action" && commitSha.test(entry.latest))) ||
         typeof entry.reason !== "string" || entry.reason.trim().length < 12 || entry.reason.length > 1000 ||
         /[\x00-\x1f\x7f]/u.test(entry.reason) || typeof entry.expires !== "string" ||
         !/^\d{4}-\d{2}-\d{2}$/u.test(entry.expires) ||
@@ -49,17 +57,32 @@ export function reviewDependencyVersions(dependencies, latest, exceptions) {
   const held = [];
   for (const dependency of dependencies) {
     if (!validDependency(dependency) || !safePath(dependency.path)) reject("INVALID_DEPENDENCY_INVENTORY");
-    const release = latest.get(`${["crate", "requirement"].includes(dependency.kind) ? "crate" : "action"}:${dependency.name.toLowerCase()}`);
-    if (!record(release) || !stableVersion.test(release.version) ||
+    const release = latest.get(`${versionLookupKind(dependency.kind)}:${dependency.name.toLowerCase()}`);
+    if (!record(release) || !(dependency.kind === "action" ? actionVersion : stableVersion).test(release.version) ||
         (["action", "git"].includes(dependency.kind) && !/^[a-f0-9]{40}$/u.test(release.sha ?? ""))) reject("INVALID_RELEASE_INVENTORY");
     if (dependency.kind === "crate" && release.yanked?.includes(dependency.current)) reject("YANKED_CARGO_DEPENDENCY");
     const lowerBound = dependency.current.replace(/^[=^]/u, "");
+    // Cargo supplies normalized comparators. Inspect each one before build
+    // metadata: a metadata identifier may contain a hyphen without making
+    // the version a prerelease, and a later comparator may introduce one.
+    const prerelease = dependency.kind === "crate" ? !stableVersion.test(dependency.current) :
+      dependency.kind === "requirement" && dependency.current.split(",").some((comparator) =>
+        comparator.split("+", 1)[0].includes("-"));
+    if (prerelease && dependency.kind === "requirement" &&
+        (dependency.current !== `=${lowerBound}` || !crateVersion.test(lowerBound))) {
+      reject("UNPINNED_CARGO_PRERELEASE");
+    }
+    // A prerelease can sort above the registry's newest stable version. It
+    // still needs an explicit hold; version ordering cannot approve its use.
     if (["action", "git"].includes(dependency.kind) ? dependency.current === release.sha : dependency.kind === "requirement"
       ? stableVersion.test(lowerBound) && compareVersions(lowerBound, release.version) === 0
-      : compareVersions(dependency.current, release.version) >= 0) continue;
+      : !prerelease && compareVersions(dependency.current, release.version) >= 0) continue;
+    // Partial action tags move between releases. A hold must identify the
+    // exact advertised commit, not waive every future update of that alias.
+    const target = dependency.kind === "action" && !stableVersion.test(release.version) ? release.sha : release.version;
     const hold = exceptions.find((entry) => policyKeys.slice(0, 4).every((key) => entry[key] === dependency[key]) &&
-      entry.latest === release.version);
-    const issue = { ...dependency, latest: release.version };
+      entry.latest === target);
+    const issue = { ...dependency, latest: target };
     if (hold === undefined) updates.push(issue);
     else { used.add(hold); held.push({ ...issue, reason: hold.reason, expires: hold.expires }); }
   }
@@ -134,7 +157,7 @@ function cargoInventory(context, trackedFiles, root, run, { validate }) {
       if (typeof pkg.source !== "string" || !/^(?:registry\+https:\/\/github\.com\/rust-lang\/crates\.io-index|sparse\+https:\/\/index\.crates\.io\/)$/u.test(pkg.source)) {
         reject("UNSUPPORTED_CARGO_SOURCE");
       }
-      if (!stableVersion.test(pkg.version)) reject("UNSTABLE_CARGO_DEPENDENCY");
+      if (pkg.version.length > 256 || !crateVersion.test(pkg.version)) reject("INVALID_CARGO_VERSION");
       dependencies.push({ kind: "crate", path: lock, name: pkg.name, current: pkg.version });
     }
     if (members.size !== metadata.packages.filter((pkg) => members.has(pkg.id)).length) reject("INVALID_CARGO_METADATA");
@@ -160,7 +183,9 @@ function cargoInventory(context, trackedFiles, root, run, { validate }) {
       if (!["unmaintained", "notice"].includes(kind)) reject("SECURITY_AUDIT_FAILED");
       for (const warning of warnings) {
         if (!record(warning) || !/^RUSTSEC-\d{4}-\d{4}$/u.test(warning.advisory?.id ?? "") ||
-            !/^[A-Za-z0-9_-]+$/u.test(warning.package?.name ?? "") || !stableVersion.test(warning.package?.version ?? "")) {
+            !/^[A-Za-z0-9_-]+$/u.test(warning.package?.name ?? "") ||
+            typeof warning.package?.version !== "string" || warning.package.version.length > 256 ||
+            !crateVersion.test(warning.package.version)) {
           reject("SECURITY_AUDIT_FAILED");
         }
         notices.push({ path: lock, kind, id: warning.advisory.id, name: warning.package.name, version: warning.package.version });
@@ -194,13 +219,13 @@ export async function checkDependencyMaintenance({ context, trackedFiles, root, 
   }
   const latest = new Map();
   const requests = [...new Map(dependencies.map(({ kind, name }) =>
-    [`${["crate", "requirement"].includes(kind) ? "crate" : "action"}:${name.toLowerCase()}`,
-      { kind: ["crate", "requirement"].includes(kind) ? "crate" : "action", name }])).entries()];
+    [`${versionLookupKind(kind)}:${name.toLowerCase()}`,
+      { kind: versionLookupKind(kind), name }])).entries()];
   // Limit concurrency for crates.io's rate limits; deduplicate every lookup
   // across all workspaces and CI installation lanes in this invocation.
   // Git tag advertisements use synchronous subprocesses. Finish those before
   // starting HTTP requests so they cannot stall the registry timeout clock.
-  for (const kind of ["action", "crate"]) {
+  for (const kind of ["action", "git", "crate"]) {
     const selected = requests.filter(([, request]) => request.kind === kind);
     for (let offset = 0; offset < selected.length; offset += 4) {
       await Promise.all(selected.slice(offset, offset + 4).map(async ([key, request]) => latest.set(key, await lookup(request.kind, request.name))));

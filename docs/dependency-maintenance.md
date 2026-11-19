@@ -72,11 +72,14 @@ checks in CI; the freshness gate does not replace them.
 ## CI actions and installed tools
 
 Actions remain pinned to full commit SHAs. The gate compares each action's
-repository with its highest stable version tag, including peeled annotated
-tags and projects that publish tags without GitHub release records. It also
+repository with its highest stable version tag, including major/minor action
+tags, peeled annotated tags and projects without GitHub release records.
+At the same version, a full version tag takes precedence over a moving alias. It also
 checks exact crates.io versions installed with `cargo install` or the
 `cargo-*` tools passed to `taiki-e/install-action`, the standard Cargo tool
 version environment variables, `BUFFA_VERSION`, and `BUF_VERSION`.
+Versioned tools such as Buf and Cargo Git dependencies use full stable version
+tags; major/minor aliases apply only to actions.
 Named and unnamed steps are included. Workflows must use explicit block step
 mappings; unsupported syntax fails rather than omitting dependency installs.
 
@@ -122,9 +125,15 @@ dependency or tool pinned to a full commit. Use the owning manifest,
 lockfile, or workflow as `path`. A requirement's `current` is Cargo's normalized
 requirement, such as `^1.4.0`; an action's `current` is its full pinned SHA.
 For `git`, `name` is `owner/repository` and `current` is the full commit.
-`latest` always names the stable upstream version being deliberately held.
+`latest` names the stable upstream version being deliberately held. For an
+Action with only a major/minor release tag, use its advertised full commit SHA
+instead; the hold then covers that exact target rather than future alias updates.
 
 Every hold needs a concrete reason and expiry. Expired, duplicate, unused,
 untracked-path and malformed holds fail. A newly published upstream version
 requires reviewing and renewing the exact hold. There is no blanket skip,
 security-advisory suppression, or success fallback for network failures.
+
+Prerelease crates require a hold for each resolved lockfile version and an
+exact `=VERSION` requirement with its own hold in each member manifest.
+These holds name the latest stable release and cannot waive audits or yanks.

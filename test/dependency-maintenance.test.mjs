@@ -10,7 +10,7 @@ import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { createReleaseReadinessContext } from "../core.mjs";
 import { checkDependencyMaintenance, readDependencyExceptions, reviewDependencyVersions } from "../scripts/dependency-maintenance.mjs";
-import { compareVersions, createVersionLookup, DependencyMaintenanceError, selectStableAction, selectStableCrate,
+import { compareVersions, crateVersion, createVersionLookup, DependencyMaintenanceError, selectStableAction, selectStableCrate,
   workflowDependencies } from "../scripts/dependency-versions.mjs";
 
 const firstSha = "a".repeat(40);
@@ -83,7 +83,7 @@ test("stable release selection excludes prereleases and yanks and peels annotate
     assert.throws(() => selectStableCrate(value), errorCode("INVALID_CRATE_REGISTRY_RESPONSE"));
   }
   assert.throws(() => selectStableCrate({ versions: [{ num: "1.0.0-rc.1", yanked: false }] }), errorCode("NO_STABLE_CRATE_RELEASE"));
-  assert.throws(() => selectStableAction(`${firstSha}\trefs/tags/v1`), errorCode("NO_STABLE_ACTION_RELEASE"));
+  assert.throws(() => selectStableAction(`${firstSha}\trefs/tags/master`), errorCode("NO_STABLE_ACTION_RELEASE"));
   assert.throws(() => selectStableAction(`${firstSha}\trefs/tags/v1.0.0\n${secondSha}\trefs/tags/1.0.0`), errorCode("AMBIGUOUS_ACTION_RELEASE"));
   assert.throws(() => compareVersions("1.0", "1.0.0"), errorCode("INVALID_STABLE_VERSION"));
 });
@@ -370,4 +370,177 @@ test("informational maintenance notices are reported and cannot be hidden by aud
     stdout: JSON.stringify({ settings: auditSettings, vulnerabilities: { found: false, list: [] }, warnings: { unmaintained: [warning] } }),
   } : run(command, args, options) });
   assert.deepEqual(report.notices, [{ path: "Cargo.lock", kind: "unmaintained", id: "RUSTSEC-2026-0001", name: "example", version: "1.0.0" }]);
+});
+
+
+test("action releases accept major and minor tags, peel annotations and retain precise versions", () => {
+  assert.deepEqual(selectStableAction(`${firstSha}\trefs/tags/v1`), { version: "1", sha: firstSha });
+  assert.deepEqual(selectStableAction([
+    `${firstSha}\trefs/tags/v2.9`, `${firstSha}\trefs/tags/v2.10`, `${secondSha}\trefs/tags/v2.10^{}`,
+  ].join("\n")), { version: "2.10", sha: secondSha });
+  for (const precise of ["7.0", "7.0.0"]) {
+    assert.deepEqual(selectStableAction([
+      `${firstSha}\trefs/tags/v7`, `${secondSha}\trefs/tags/v${precise}`,
+    ].join("\n")), { version: precise, sha: secondSha });
+  }
+  assert.deepEqual(selectStableAction([
+    `${firstSha}\trefs/tags/v7`, `${secondSha}\trefs/tags/v7.0.1`,
+  ].join("\n")), { version: "7.0.1", sha: secondSha });
+  assert.throws(() => selectStableAction([
+    `${firstSha}\trefs/tags/v1`, `${secondSha}\trefs/tags/1`,
+  ].join("\n")), errorCode("AMBIGUOUS_ACTION_RELEASE"));
+  for (const tag of ["master", "v01", "v1.02", "v1.2.03", "v2-rc.1", "v2.1-beta", "v1.2.3.4"]) {
+    assert.throws(() => selectStableAction(`${firstSha}\trefs/tags/${tag}`), errorCode("NO_STABLE_ACTION_RELEASE"));
+  }
+});
+
+test("the Rust action's v1 tag works without allowing partial Cargo Git releases", async () => {
+  const calls = [];
+  const lookup = createVersionLookup((command, args) => {
+    calls.push({ command, args });
+    return { stdout: `${firstSha}\trefs/tags/v1\n` };
+  });
+  assert.deepEqual(await lookup("action", "dtolnay/rust-toolchain"), { version: "1", sha: firstSha });
+  assert.deepEqual(await lookup("action", "dtolnay/rust-toolchain"), { version: "1", sha: firstSha });
+  await assert.rejects(() => lookup("git", "dtolnay/rust-toolchain"), errorCode("NO_STABLE_ACTION_RELEASE"));
+  assert.equal(calls.length, 2);
+  assert(calls.every(({ command, args }) => command === "git" && args.join(" ") ===
+    "ls-remote --tags https://github.com/dtolnay/rust-toolchain.git"));
+});
+
+test("versioned tools ignore higher partial aliases while actions still accept them", async (t) => {
+  const { root, check, write } = fixture(t, { rust: false });
+  const path = ".github/workflows/proto.yml";
+  write(path, `on: push
+env:
+  BUF_VERSION: "1.72.0"
+jobs:
+  proto:
+    steps:
+      - uses: dtolnay/rust-toolchain@${secondSha}
+`);
+  const lookup = createVersionLookup((_command, args) => ({ stdout: args.at(-1).endsWith("/bufbuild/buf.git")
+    ? [`${firstSha}\trefs/tags/v1.72.0`, `${secondSha}\trefs/tags/v2`, `${secondSha}\trefs/tags/v2.0.0-rc.1`].join("\n")
+    : `${secondSha}\trefs/tags/v2\n` }));
+  assert.deepEqual((await check({ lookup })).updates, []);
+  write(path, readFileSync(join(root, path), "utf8").replace("1.72.0", "1.71.0"));
+  assert.deepEqual((await check({ lookup })).updates,
+    [{ kind: "action-version", path, name: "bufbuild/buf", current: "1.71.0", latest: "1.72.0" }]);
+});
+
+test("partial action tags check exact pins and holds bind to the advertised target commit", async (t) => {
+  const { check, write, context, trackedFiles } = fixture(t, { rust: false });
+  const path = ".github/workflows/checks.yml";
+  write(path, `on: push\njobs:\n  rust:\n    steps:\n      - uses: dtolnay/rust-toolchain@${firstSha}\n`);
+  let latestSha = firstSha;
+  const lookup = createVersionLookup(() => ({ stdout: `${latestSha}\trefs/tags/v1\n` }));
+  assert.deepEqual((await check({ lookup })).updates, []);
+  // New lookups model a later invocation after the moving tag advances.
+  const changedLookup = () => createVersionLookup(() => ({ stdout: `${latestSha}\trefs/tags/v1\n` }));
+  latestSha = secondSha;
+  assert.deepEqual((await check({ lookup: changedLookup() })).updates,
+    [{ kind: "action", path, name: "dtolnay/rust-toolchain", current: firstSha, latest: secondSha }]);
+  const exception = hold({ kind: "action", path, name: "dtolnay/rust-toolchain", current: firstSha, latest: secondSha });
+  write(policyPath, JSON.stringify({ schema: 1, exceptions: [exception] }));
+  assert.equal(readDependencyExceptions(context, trackedFiles).length, 1);
+  assert.deepEqual((await check({ lookup: changedLookup() })).updates, []);
+  latestSha = "c".repeat(40);
+  await assert.rejects(() => check({ lookup: changedLookup() }), errorCode("UNUSED_DEPENDENCY_EXCEPTION"));
+  write(policyPath, JSON.stringify({ schema: 1, exceptions: [{ ...exception, latest: "1" }] }));
+  assert.throws(() => readDependencyExceptions(context, trackedFiles), errorCode("INVALID_DEPENDENCY_EXCEPTION"));
+  write(policyPath, JSON.stringify({ schema: 1, exceptions: [{ ...exception, kind: "git" }] }));
+  assert.throws(() => readDependencyExceptions(context, trackedFiles), errorCode("INVALID_DEPENDENCY_EXCEPTION"));
+});
+
+test("major action tags never permit a mutable workflow ref", (t) => {
+  const { write, context } = fixture(t, { rust: false });
+  const path = ".github/workflows/checks.yml";
+  for (const ref of ["v1", "master", "stable"]) {
+    write(path, `on: push\njobs:\n  rust:\n    steps:\n      - uses: dtolnay/rust-toolchain@${ref}\n`);
+    assert.throws(() => workflowDependencies(context, path), errorCode("UNPINNED_WORKFLOW_ACTION"));
+  }
+});
+
+test("Cargo prerelease syntax is validated without changing stable release selection", () => {
+  for (const version of ["0.14.0-pre.12", "0.14.0-pre.15", "0.2.0-rc.5", "1.0.0-0", "1.0.0-01a", "1.0.0-rc.1+build.01"]) {
+    assert.equal(crateVersion.test(version), true, version);
+  }
+  for (const version of ["01.0.0-rc.1", "1.0.0-01", "1.0.0-rc.01", "1.0.0-", "1.0.0-rc..1", "1.0.0-rc.1+", "1.0.0-rc.1\n"]) {
+    assert.equal(crateVersion.test(version), false, version);
+  }
+  assert.throws(() => compareVersions("0.14.0-pre.12", "0.6.0"), errorCode("INVALID_STABLE_VERSION"));
+});
+
+test("prereleases require exact version holds even when newer than the latest stable release", () => {
+  const dependency = { kind: "crate", path: "Cargo.lock", name: "example", current: "0.14.0-pre.12" };
+  const latest = new Map([["crate:example", { version: "0.6.0" }]]);
+  assert.equal(reviewDependencyVersions([dependency], latest, []).updates.length, 1);
+  const exception = hold({ current: dependency.current, latest: "0.6.0" });
+  assert.equal(reviewDependencyVersions([dependency], latest, [exception]).held.length, 1);
+  for (const changes of [{ current: "0.14.0-pre.13" }, { name: "other" }, { path: "fuzz/Cargo.lock" }]) {
+    assert.throws(() => reviewDependencyVersions([{ ...dependency, ...changes }], latest, [exception]),
+      (error) => error instanceof DependencyMaintenanceError);
+  }
+  assert.throws(() => reviewDependencyVersions([dependency], new Map([["crate:example", { version: "0.14.0" }]]), [exception]),
+    errorCode("UNUSED_DEPENDENCY_EXCEPTION"));
+  assert.throws(() => reviewDependencyVersions([dependency],
+    new Map([["crate:example", { version: "0.6.0", yanked: [dependency.current] }]]), [exception]),
+    errorCode("YANKED_CARGO_DEPENDENCY"));
+});
+
+test("direct prerelease requirements must be exact and have their own scoped hold", () => {
+  const dependency = { kind: "requirement", path: "first/Cargo.toml", name: "example", current: "=0.2.0-rc.5" };
+  const latest = new Map([["crate:example", { version: "0.1.0" }]]);
+  assert.equal(reviewDependencyVersions([dependency], latest, []).updates.length, 1);
+  const exception = hold({ ...dependency, latest: "0.1.0" });
+  assert.equal(reviewDependencyVersions([dependency], latest, [exception]).held.length, 1);
+  for (const current of [
+    "^0.2.0-rc.5", "0.2.0-rc.5", "~0.2.0-rc.5", ">=0.2.0-rc.5", "<=0.2.0-rc.5",
+    ">0.2.0-rc.5", "<0.2.0-rc.5", ">=0.2.0-rc.5, <0.3.0", "^0.1.0, >=0.2.0-rc.5",
+    "=0.2.0-rc.5, <0.3.0", "=0.2.0-rc.5, =0.2.0-rc.5", ">=0.1.0+tooling-build, <0.2.0-rc.5",
+  ]) {
+    assert.throws(() => reviewDependencyVersions([{ ...dependency, current }], latest, [{ ...exception, current }]),
+      errorCode("UNPINNED_CARGO_PRERELEASE"));
+  }
+});
+
+test("build metadata hyphens do not turn stable requirements into prereleases", () => {
+  const latest = new Map([["crate:example", { version: "1.0.0" }]]);
+  for (const current of ["^1.0.0+tooling-build.01", "=1.0.0+build-rc.1"]) {
+    assert.deepEqual(reviewDependencyVersions([
+      { kind: "requirement", path: "Cargo.toml", name: "example", current },
+    ], latest, []), { updates: [], held: [] });
+  }
+  const dependency = { kind: "requirement", path: "Cargo.toml", name: "example", current: "=1.1.0-rc.1+tooling-build.01" };
+  assert.equal(reviewDependencyVersions([dependency], latest, [hold({ ...dependency, latest: "1.0.0" })]).held.length, 1);
+});
+
+test("prerelease holds reach security audits and cannot waive findings or hide notices", async (t) => {
+  const { check, run, write, metadata, commands } = fixture(t);
+  const version = "1.1.0-rc.1";
+  metadata.get("Cargo.toml").packages.at(-1).version = version;
+  write(policyPath, JSON.stringify({ schema: 1, exceptions: [hold({ current: version, latest: "1.0.0" })] }));
+  const accepted = await check();
+  assert.equal(accepted.updates.length, 0);
+  assert.equal(accepted.held.length, 1);
+  assert.ok(commands.some(({ args }) => args[0] === "audit"));
+  const warning = { advisory: { id: "RUSTSEC-2026-0001" }, package: { name: "example", version } };
+  const report = await check({ run: (command, args, options) => args[0] === "audit" ? {
+    stdout: JSON.stringify({ settings: auditSettings, vulnerabilities: { found: false, list: [] }, warnings: { notice: [warning] } }),
+  } : run(command, args, options) });
+  assert.equal(report.notices[0].version, version);
+  for (const audit of [
+    { settings: auditSettings, vulnerabilities: { found: true, list: [{ advisory: {} }] }, warnings: {} },
+    { settings: { ...auditSettings, ignore: [warning.advisory.id] }, vulnerabilities: { found: false, list: [] }, warnings: {} },
+    { settings: auditSettings, vulnerabilities: { found: false, list: [] }, warnings: { unsound: [warning] } },
+  ]) {
+    await assert.rejects(() => check({ run: (command, args, options) => args[0] === "audit"
+      ? { stdout: JSON.stringify(audit) } : run(command, args, options) }), errorCode("SECURITY_AUDIT_FAILED"));
+  }
+  write(policyPath, JSON.stringify({ schema: 1, exceptions: [hold({ current: version, latest: "1.0.0", expires: "2026-11-18" })] }));
+  await assert.rejects(() => check({ today: "2026-11-19" }), errorCode("EXPIRED_DEPENDENCY_EXCEPTION"));
+  write(policyPath, JSON.stringify({ schema: 1, exceptions: [] }));
+  assert.equal((await check()).updates.length, 1);
+  metadata.get("Cargo.toml").packages.at(-1).version = "1.1.0-rc.01";
+  await assert.rejects(() => check(), errorCode("INVALID_CARGO_VERSION"));
 });
