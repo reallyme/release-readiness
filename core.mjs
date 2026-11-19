@@ -11,13 +11,12 @@ import { spawnSync } from "node:child_process";
 // This module is the release package's shared policy core. The public runner
 // supplies this exact immutable module to consumers so release-critical checks
 // cannot drift independently from the pinned package revision.
-export const RELEASE_READINESS_VERSION = "0.9.7";
+export const RELEASE_READINESS_VERSION = "0.9.8";
 
 const DEFAULT_FAILURE_PREFIX = "release readiness check failed";
 const MAX_PRODUCTION_SOURCE_LINES = 500;
 const MAX_SEPARATE_TEST_SOURCE_LINES = 800;
 const RUST_RELEASE_TOOLCHAIN = "1.100.0";
-const CARGO_DENY_VERSION = "0.20.2";
 const CARGO_DENY_INSTALL_ACTION = "taiki-e/install-action";
 const REALLYME_BUFFA_RUNTIME = "reallyme-buffa";
 const REALLYME_BUFFA_GENERATORS = [
@@ -4370,23 +4369,23 @@ export function createReleaseReadinessContext(options) {
     return match?.[0].length ?? 0;
   };
 
-  const extractWorkflowStepsFromLines = (path, lines, start, end, jobName = null) => {
+  const extractWorkflowStepsFromLines = (path, lines, start, end, jobName = null, includeUnnamed = false) => {
     const steps = [];
     const firstItem = jobName === null ? undefined : lines.slice(start, end).find(
       (line) => stripWorkflowInlineComment(line).trim().length !== 0,
     );
     const listIndent = firstItem === undefined ? null : countLeadingSpaces(firstItem);
     for (let index = start; index < end; index += 1) {
-      const nameMatch = /^(\s*)-\s+name:\s*(.+?)\s*$/u.exec(lines[index]);
-      if (nameMatch === null) {
+      const itemMatch = /^(\s*)-\s+([A-Za-z][A-Za-z0-9-]*):\s*(.*?)\s*$/u.exec(lines[index]);
+      if (itemMatch === null || (!includeUnnamed && itemMatch[2] !== "name")) {
         continue;
       }
 
-      const stepIndent = nameMatch[1].length;
+      const stepIndent = itemMatch[1].length;
       if (listIndent !== null && stepIndent !== listIndent) {
         continue;
       }
-      const name = unquoteWorkflowScalar(nameMatch[2]);
+      const name = itemMatch[2] === "name" ? unquoteWorkflowScalar(itemMatch[3]) : null;
       let stepEnd = end;
       for (let cursor = index + 1; cursor < end; cursor += 1) {
         const candidate = lines[cursor];
@@ -4401,11 +4400,12 @@ export function createReleaseReadinessContext(options) {
       let condition = null;
       let continueOnError = null;
       let workingDirectory = null;
-      for (let cursor = index + 1; cursor < stepEnd; cursor += 1) {
-        if (countLeadingSpaces(lines[cursor]) !== stepIndent + 2) {
+      for (let cursor = index; cursor < stepEnd; cursor += 1) {
+        const line = cursor === index ? lines[cursor].replace(/^(\s*)- /u, "$1  ") : lines[cursor];
+        if (countLeadingSpaces(line) !== stepIndent + 2) {
           continue;
         }
-        const runMatch = /^(\s*)run:\s*(.*)\s*$/u.exec(lines[cursor]);
+        const runMatch = /^(\s*)run:\s*(.*)\s*$/u.exec(line);
         if (runMatch !== null) {
           if (run !== null) {
             fail(`${path} step ${name} defines run more than once`);
@@ -4443,7 +4443,7 @@ export function createReleaseReadinessContext(options) {
           }
         }
 
-        const usesMatch = /^\s*uses:\s*(.+?)\s*$/u.exec(lines[cursor]);
+        const usesMatch = /^\s*uses:\s*(.+?)\s*$/u.exec(line);
         if (usesMatch !== null) {
           if (uses !== null) {
             fail(`${path} step ${name} defines uses more than once`);
@@ -4451,7 +4451,7 @@ export function createReleaseReadinessContext(options) {
           uses = unquoteWorkflowScalar(usesMatch[1]);
         }
 
-        const conditionMatch = /^\s*(?:if|"if"|'if')[ \t]*:\s*(.*?)\s*$/u.exec(lines[cursor]);
+        const conditionMatch = /^\s*(?:if|"if"|'if')[ \t]*:\s*(.*?)\s*$/u.exec(line);
         if (conditionMatch !== null) {
           if (condition !== null) {
             fail(`${path} step ${name} defines if more than once`);
@@ -4459,7 +4459,7 @@ export function createReleaseReadinessContext(options) {
           condition = unquoteWorkflowScalar(conditionMatch[1]);
         }
 
-        const continueOnErrorMatch = /^\s*(?:continue-on-error|"continue-on-error"|'continue-on-error')[ \t]*:\s*(.*)$/u.exec(lines[cursor]);
+        const continueOnErrorMatch = /^\s*(?:continue-on-error|"continue-on-error"|'continue-on-error')[ \t]*:\s*(.*)$/u.exec(line);
         if (continueOnErrorMatch !== null) {
           if (continueOnError !== null) {
             fail(`${path} step ${name} defines continue-on-error more than once`);
@@ -4468,7 +4468,7 @@ export function createReleaseReadinessContext(options) {
         }
 
         const workingDirectoryMatch = /^\s*(?:working-directory|"working-directory"|'working-directory'):\s*(.*?)\s*$/u.exec(
-          lines[cursor],
+          line,
         );
         if (workingDirectoryMatch !== null) {
           if (workingDirectory !== null) {
@@ -4692,11 +4692,11 @@ export function createReleaseReadinessContext(options) {
     }
   };
 
-  const extractWorkflowSteps = (path) => {
+  const extractWorkflowSteps = (path, { includeUnnamed = false } = {}) => {
     const jobs = extractWorkflowJobs(path);
     if (jobs.length === 0) {
       const lines = readText(path).replace(/\r\n/gu, "\n").split("\n");
-      return extractWorkflowStepsFromLines(path, lines, 0, lines.length);
+      return extractWorkflowStepsFromLines(path, lines, 0, lines.length, null, includeUnnamed);
     }
     return jobs.flatMap((job) => {
       const stepHeaders = [];
@@ -4729,6 +4729,7 @@ export function createReleaseReadinessContext(options) {
         stepHeaders[0] + 1,
         stepsEnd,
         job.name,
+        includeUnnamed,
       );
     });
   };
@@ -5025,16 +5026,16 @@ export function createReleaseReadinessContext(options) {
 
   const assertCargoDenyInstallStep = (workflow, job, name, step, lines) => {
     const location = `${workflow} ${job}/${name}`;
-    const cargoInstall = `cargo +${RUST_RELEASE_TOOLCHAIN} install cargo-deny --version '=${CARGO_DENY_VERSION}' --locked`;
     if (step.run !== null && step.uses !== null) {
       fail(`${location} must define one installation method`);
     }
     if (step.run !== null) {
       const command = normalizeWorkflowRunCommand(step.run);
-      if (command !== cargoInstall && command !== `${cargoInstall} --force`) {
-        fail(`${location} run command changed; pin cargo-deny ${CARGO_DENY_VERSION} and use --locked`);
+      const exactInstall = new RegExp(`^cargo \\+${escapeRegExpLiteral(RUST_RELEASE_TOOLCHAIN)} install cargo-deny --version '=(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)' --locked(?: --force)?$`, "u");
+      if (!exactInstall.test(command)) {
+        fail(`${location} run command changed; pin an exact stable cargo-deny version and use --locked`);
       }
-      if (command === `${cargoInstall} --force`) {
+      if (command.endsWith(" --force")) {
         return;
       }
 
@@ -5071,9 +5072,9 @@ export function createReleaseReadinessContext(options) {
     }
     const inputs = readWorkflowStepInputs(location, step, lines);
     if ([...inputs.keys()].some((key) => !["tool", "fallback", "checksum"].includes(key)) ||
-        inputs.get("tool") !== `cargo-deny@${CARGO_DENY_VERSION}` ||
+        !/^cargo-deny@(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/u.test(inputs.get("tool") ?? "") ||
         inputs.get("fallback") !== "none" || (inputs.get("checksum") ?? "true") !== "true") {
-      fail(`${location} must install cargo-deny@${CARGO_DENY_VERSION} with checksums and fallback: none`);
+      fail(`${location} must install an exact stable cargo-deny version with checksums and fallback: none`);
     }
   };
 

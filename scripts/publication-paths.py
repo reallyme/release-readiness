@@ -3,12 +3,13 @@
 #
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
-"""List actual publication entries without extracting or logging their contents."""
+"""Inspect publication entries without extracting files or logging their contents."""
 
 import io
 import json
 import os
 import posixpath
+import re
 from pathlib import Path, PurePosixPath
 import stat
 import sys
@@ -19,7 +20,19 @@ import zlib
 MAX_ENTRIES = 100_000
 MAX_NESTED_BYTES = 64 * 1024 * 1024
 MAX_DEPTH = 4
+MAX_DOCUMENT_BYTES = 4 * 1024 * 1024
+MAX_DOCUMENT_TOTAL_BYTES = 8 * 1024 * 1024
 ARCHIVES = (".zip", ".jar", ".aar", ".crate", ".tgz", ".tar", ".tar.gz", ".tar.xz", ".tar.bz2")
+CONVENTIONAL_DOCUMENT = re.compile(
+    r"(?:readme|contributing|security|code_of_conduct|changelog|changes|licen[cs]e(?:[-.][a-z0-9-]+)?|notice)"
+    r"(?:\.(?:md|mdx|markdown|rst|adoc|txt))?", re.IGNORECASE,
+)
+
+
+def is_document(name):
+    return name.lower().endswith((".md", ".mdx", ".markdown", ".rst", ".adoc")) or bool(
+        CONVENTIONAL_DOCUMENT.fullmatch(PurePosixPath(name).name)
+    )
 
 
 class PublicationError(Exception):
@@ -50,6 +63,19 @@ class Inventory:
         self.paths = []
         self.nested_bytes = 0
         self.entries = 0
+        self.documents = []
+        self.document_bytes = 0
+
+    def document(self, name, size, reader):
+        if not is_document(name):
+            return
+        if size < 0 or size > MAX_DOCUMENT_BYTES or self.document_bytes + size > MAX_DOCUMENT_TOTAL_BYTES:
+            raise PublicationError("DOCUMENTATION_TOO_LARGE")
+        self.document_bytes += size
+        data = reader(size + 1)
+        if len(data) != size:
+            raise PublicationError("INVALID_DOCUMENTATION_SIZE")
+        self.documents.append({"path": name, "text": data.decode("utf-8", errors="strict")})
 
     def add(self, name, prefix="", strip=0, directory=False):
         source = canonical(name)
@@ -70,6 +96,8 @@ class Inventory:
         return path
 
     def link(self, path, target):
+        if is_document(path):
+            raise PublicationError("DOCUMENTATION_MUST_BE_REGULAR")
         if not target or len(target) > 4096 or "\\" in target or "\x00" in target:
             raise PublicationError("INVALID_LINK_TARGET")
         if target.startswith("/") or (len(target) > 1 and target[1] == ":"):
@@ -112,9 +140,12 @@ class Inventory:
                             raise PublicationError("INVALID_LINK_TARGET")
                         self.link(path, archive.read(item).decode("utf-8", errors="strict"))
                         continue
-                    if path.lower().endswith(ARCHIVES):
+                    if is_document(path) or path.lower().endswith(ARCHIVES):
                         with archive.open(item) as stream:
-                            self.nested(path, item.file_size, stream.read, depth)
+                            if is_document(path):
+                                self.document(path, item.file_size, stream.read)
+                            else:
+                                self.nested(path, item.file_size, stream.read, depth)
             return
         if hasattr(source, "seek"):
             source.seek(0)
@@ -136,12 +167,15 @@ class Inventory:
                     continue
                 if not item.isfile():
                     raise PublicationError("UNSUPPORTED_ARCHIVE_ENTRY")
-                if path.lower().endswith(ARCHIVES):
+                if is_document(path) or path.lower().endswith(ARCHIVES):
                     stream = archive.extractfile(item)
                     if stream is None:
                         raise PublicationError("UNREADABLE_ARCHIVE_ENTRY")
                     with stream:
-                        self.nested(path, item.size, stream.read, depth)
+                        if is_document(path):
+                            self.document(path, item.size, stream.read)
+                        else:
+                            self.nested(path, item.size, stream.read, depth)
 
     def inspect(self, source, strip):
         if source.is_symlink():
@@ -168,13 +202,19 @@ class Inventory:
                         raise PublicationError("PUBLICATION_MUST_CONTAIN_REGULAR_FILES")
                     relative = path.relative_to(source).as_posix()
                     self.add(relative)
-                    if name.lower().endswith(ARCHIVES):
+                    if is_document(relative):
+                        with path.open("rb") as stream:
+                            self.document(relative, path.stat().st_size, stream.read)
+                    elif name.lower().endswith(ARCHIVES):
                         prefix = str(PurePosixPath(relative).parent)
                         self.archive(path, prefix="" if prefix == "." else prefix)
         elif source.is_file() and source.name.lower().endswith(ARCHIVES):
             self.archive(source, strip=strip)
         elif source.is_file():
             self.add(source.name)
+            if is_document(source.name):
+                with source.open("rb") as stream:
+                    self.document(source.name, source.stat().st_size, stream.read)
         else:
             raise PublicationError("EXPECTED_ARCHIVE_OR_STAGING_DIRECTORY")
         if not self.paths:
@@ -187,7 +227,7 @@ def main():
             raise PublicationError("INVALID_ARGUMENTS")
         inventory = Inventory()
         inventory.inspect(Path(sys.argv[1]), int(sys.argv[2]))
-        sys.stdout.write(json.dumps(inventory.paths, ensure_ascii=True))
+        sys.stdout.write(json.dumps({"paths": inventory.paths, "documents": inventory.documents}, ensure_ascii=True))
         return 0
     except (PublicationError, OSError, ValueError, UnicodeError, tarfile.TarError, zipfile.BadZipFile, RuntimeError, EOFError, zlib.error):
         # Paths and archive bytes can contain private data. The caller reports

@@ -17,6 +17,8 @@ import {
 } from "./public-release.mjs";
 import { assertPublicRepoPolicy } from "./public-repo-policy.mjs";
 import { assertRepositoryPrivacy, RepositoryPrivacyError } from "./repository-privacy.mjs";
+import { checkDependencyMaintenance, DependencyMaintenanceError } from "./dependency-maintenance.mjs";
+import { assertDocumentationPolicy, DocumentationPolicyError } from "./documentation-policy.mjs";
 
 const MAX_CHECKER_BYTES = 524_288;
 const MAX_SHARED_CORE_BYTES = 262_144;
@@ -24,6 +26,7 @@ const MAX_TRACKED_FILES_BYTES = 16_777_216;
 const args = process.argv.slice(2);
 const commandArguments = new Map([
   ["--check-workflows", [0]],
+  ["--check-dependencies", [0, 1]],
   ["--render-ci", [0]],
   ["--render-preflight-summary", [0, 1]],
   ["--check-release", [5]],
@@ -89,6 +92,14 @@ try {
 } catch (error) {
   failure(`repository privacy policy failed: ${error instanceof RepositoryPrivacyError ? error.code : "CHECK_FAILED"}`);
 }
+try {
+  assertDocumentationPolicy({ root: repositoryRoot });
+} catch (error) {
+  if (error instanceof DocumentationPolicyError) {
+    for (const path of error.paths) console.error(JSON.stringify(path));
+  }
+  failure(`documentation policy failed: ${error instanceof DocumentationPolicyError ? error.code : "CHECK_FAILED"}`);
+}
 const repositoryContext = createReleaseReadinessContext({
   scriptUrl: pathToFileURL(checkerPath).href,
   failurePrefix: "release readiness runner failed",
@@ -102,7 +113,10 @@ if (workflowCommand !== undefined &&
   if (workflowCommand === "--render-preflight-summary") failure("use --render-preflight-summary [ECOSYSTEM]");
   failure(`${workflowCommand} must be used on its own`);
 }
-if (workflowCommand === "--render-preflight-summary") {
+if (workflowCommand === "--check-dependencies") {
+  if (args.length === 2 && args[1] !== "--validate") failure("use --check-dependencies [--validate]");
+  await reviewDependencies(args[1] === "--validate");
+} else if (workflowCommand === "--render-preflight-summary") {
   const [, ecosystem] = args;
   let publishWorkflow;
   if (ecosystem !== undefined) {
@@ -133,6 +147,7 @@ if (workflowCommand === "--render-preflight-summary") {
         mergeQueue: policy.mergeQueue, lanes: policy.ciLanes,
         requireAndroidPublication: ecosystem === "maven" && policy.hasAndroidLane,
       });
+      await reviewDependencies(false);
       writePublicPreflightReceipt(repositoryContext, { repository, ecosystem, version, tag, sha }, ci);
       writePublicReleaseOutputs(repositoryContext, { ...ci, preflightRunId: null, tagOwner });
       console.log(`Verified repository version ${version} and Required CI run ${ci.ciRunId} for ${sha}. Canonical tag owner: ${tagOwner}.`);
@@ -149,6 +164,22 @@ if (workflowCommand === "--render-preflight-summary") {
 } else {
   const policy = assertPublicRepoPolicy(repositoryContext, trackedFiles, process.env, { selfCheck });
   runConsumerChecker(policy?.coverage);
+}
+
+async function reviewDependencies(validate) {
+  let result;
+  try {
+    result = await checkDependencyMaintenance({ context: repositoryContext, trackedFiles, root: repositoryRoot, validate });
+  } catch (error) {
+    const detail = error instanceof DependencyMaintenanceError
+      ? `${error.code}${error.operation === undefined ? "" : ` (${error.operation})`}` : "CHECK_FAILED";
+    failure(`dependency maintenance failed: ${detail}`);
+  }
+  for (const entry of result.held) console.log(`Dependency hold: ${JSON.stringify(entry)}`);
+  for (const entry of result.notices) console.warn(`Dependency advisory notice: ${JSON.stringify(entry)}`);
+  for (const entry of result.updates) console.error(`Dependency update required: ${JSON.stringify(entry)}`);
+  if (result.updates.length !== 0) failure("update dependencies or declare scoped holds in .github/dependency-maintenance.json before preflight");
+  console.log(`Dependency maintenance passed: ${result.workspaces.length} Cargo workspace(s), ${result.checked} distinct registry/tool/action checks.`);
 }
 
 function runConsumerChecker(standardCiPaths) {

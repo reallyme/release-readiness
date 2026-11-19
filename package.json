@@ -1,6 +1,6 @@
 {
   "name": "@reallyme/release-readiness",
-  "version": "0.9.7",
+  "version": "0.9.8",
   "private": true,
   "type": "module",
   "description": "Shared release-readiness guardrails for ReallyMe repositories.",
@@ -16,6 +16,9 @@
     "scripts/public-ci.mjs",
     "scripts/public-release.mjs",
     "scripts/public-repo-policy.mjs",
+    "scripts/dependency-maintenance.mjs",
+    "scripts/dependency-versions.mjs",
+    "scripts/documentation-policy.mjs",
     "scripts/repository-privacy.mjs",
     "scripts/publication-paths.py",
     "scripts/run-consumer-check.mjs",
@@ -24,9 +27,11 @@
     "templates/"
   ],
   "scripts": {
+    "check:documentation": "node scripts/documentation-policy.mjs",
+    "check:dependencies": "node scripts/run-consumer-check.mjs --check-dependencies",
     "privacy:install-hooks": "node scripts/repository-privacy.mjs --install-hooks",
     "prepack": "node scripts/repository-privacy.mjs --npm-package",
-    "check": "node --check scripts/repository-privacy.mjs && node --check core.mjs && node --check scripts/check_release_readiness.mjs && node --check scripts/public-ci.mjs && node --check scripts/public-release.mjs && node --check scripts/public-repo-policy.mjs && node --check scripts/run-consumer-check.mjs && node --check scripts/android-publication.mjs && node --check scripts/android-runtime.mjs && node --test test/*.test.mjs && node scripts/check_release_readiness.mjs"
+    "check": "node scripts/documentation-policy.mjs && node --check scripts/documentation-policy.mjs && node --check scripts/dependency-maintenance.mjs && node --check scripts/dependency-versions.mjs && node --check scripts/repository-privacy.mjs && node --check core.mjs && node --check scripts/check_release_readiness.mjs && node --check scripts/public-ci.mjs && node --check scripts/public-release.mjs && node --check scripts/public-repo-policy.mjs && node --check scripts/run-consumer-check.mjs && node --check scripts/android-publication.mjs && node --check scripts/android-runtime.mjs && node --test test/*.test.mjs && node scripts/check_release_readiness.mjs"
   },
   "engines": {
     "node": ">=26"

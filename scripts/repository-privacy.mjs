@@ -9,6 +9,10 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  assertDocumentationArtifactContent, assertDocumentationArtifactPaths, assertDocumentationPolicy,
+  assertDocumentationPublicationFile, DocumentationPolicyError, isDocumentationPath, DOCUMENTATION_POLICY,
+} from "./documentation-policy.mjs";
 
 const MAX_OUTPUT = 16 * 1024 * 1024;
 const MAX_IGNORE = 1024 * 1024;
@@ -62,6 +66,7 @@ function assertPaths(paths) {
 
 function assertPublicationPrivacy(paths) {
   assertPaths(paths);
+  assertDocumentationArtifactPaths(paths);
   const privatePaths = paths.filter((path) => path.split("/").some((part) =>
     part === ".secrets" || part === ".env" || (part.startsWith(".env.") && part !== ".env.example")));
   if (privatePaths.length > 0) throw new RepositoryPrivacyError("PRIVATE_PUBLICATION_PATH", privatePaths);
@@ -132,19 +137,28 @@ export function assertPushPrivacy({ root = process.cwd(), updates, env = process
   const commits = new Map();
   const trees = new Map();
   const checked = new Set();
+  const documentationChecked = new Set();
   const fingerprint = (revision) => {
     if (trees.has(revision)) return trees.get(revision);
     const names = createHash("sha256");
     const rules = createHash("sha256");
+    const documentation = createHash("sha256");
     for (const record of decode(git(root, ["ls-tree", "-r", "--full-tree", "-z", revision], { env })).split("\0").filter(Boolean)) {
       const entry = /^([0-7]{6}) (?:blob|commit) ((?:[a-f0-9]{40}|[a-f0-9]{64}))\t([\s\S]+)$/u.exec(record);
       if (entry === null) throw new RepositoryPrivacyError("INVALID_OR_UNMERGED_INDEX");
       names.update(`${entry[1]}\0${entry[3]}\0`);
       if (entry[3] === ".gitignore" || entry[3].endsWith("/.gitignore")) rules.update(record).update("\0");
+      if (isDocumentationPath(entry[3]) || entry[3] === DOCUMENTATION_POLICY) documentation.update(record).update("\0");
     }
-    const value = { names: names.digest("hex"), rules: rules.digest("hex") };
+    const value = { names: names.digest("hex"), rules: rules.digest("hex"), documentation: documentation.digest("hex") };
     trees.set(revision, value);
     return value;
+  };
+  const checkDocumentation = (revision, requirePurposes) => {
+    const key = `${fingerprint(revision).documentation}:${requirePurposes}`;
+    if (documentationChecked.has(key)) return;
+    assertDocumentationPolicy({ root, revision, requirePurposes, env });
+    documentationChecked.add(key);
   };
   const check = (revision, policyRevision, requireRules = true) => {
     const source = fingerprint(revision);
@@ -169,6 +183,7 @@ export function assertPushPrivacy({ root = process.cwd(), updates, env = process
     // Check the tip as well as outgoing commits. A new tag or branch must not
     // make an old unsafe tree reachable again. Unknown remote baselines fail.
     check(candidate);
+    checkDocumentation(candidate, true);
     const range = /^0+$/u.test(remote) ? [candidate] : [candidate, `^${remote}`];
     const outgoing = decode(git(root, ["rev-list", ...range, "--"], { env })).trim();
     for (const oid of outgoing.split("\n").filter(Boolean)) {
@@ -181,6 +196,7 @@ export function assertPushPrivacy({ root = process.cwd(), updates, env = process
     // Old commits need not predate this policy's literal baseline, but their
     // contents must satisfy both their own ignores and the outgoing tip's rules.
     check(revision, undefined, false);
+    checkDocumentation(revision, false);
     for (const policyRevision of policies) check(revision, policyRevision);
   }
   return commits.size;
@@ -227,26 +243,39 @@ export function checkPublication({ root = process.cwd(), artifact, stripComponen
     throw new RepositoryPrivacyError("PUBLICATION_REQUIRES_LITERAL_PATHS");
   }
   const source = assertRepositoryPrivacy({ root });
+  assertDocumentationPolicy({ root });
   const worker = fileURLToPath(new URL("./publication-paths.py", import.meta.url));
   for (const selected of new Set(artifacts)) {
     const result = spawnSync("python3", [worker, resolve(root, selected), String(stripComponents)], {
       encoding: null, maxBuffer: MAX_OUTPUT, timeout: 60_000, stdio: ["ignore", "pipe", "pipe"],
     });
     if (result.error !== undefined || result.status !== 0) throw new RepositoryPrivacyError("ARTIFACT_INSPECTION_FAILED");
-    let paths;
+    let manifest;
     try {
-      paths = JSON.parse(decode(result.stdout));
+      manifest = JSON.parse(decode(result.stdout));
     } catch {
       throw new RepositoryPrivacyError("INVALID_ARTIFACT_MANIFEST");
     }
     // Ignore rules govern source tracking. A CI-produced dist file, JAR or
     // XCFramework remains publishable even when its build path is Git-ignored.
-    assertPublicationPrivacy(paths);
+    if (manifest === null || typeof manifest !== "object" || !Array.isArray(manifest.documents)) {
+      throw new RepositoryPrivacyError("INVALID_ARTIFACT_MANIFEST");
+    }
+    assertPublicationPrivacy(manifest.paths);
+    const paths = new Set(manifest.paths);
+    for (const document of manifest.documents) {
+      if (document === null || typeof document !== "object" || !paths.has(document.path)) {
+        throw new RepositoryPrivacyError("INVALID_ARTIFACT_MANIFEST");
+      }
+      assertDocumentationArtifactContent(document.path, document.text);
+    }
   }
   return source;
 }
 
 export function checkNpmPublication({ root = process.cwd() } = {}) {
+  const source = assertRepositoryPrivacy({ root });
+  assertDocumentationPolicy({ root });
   const scratch = mkdtempSync(join(tmpdir(), "reallyme-npm-privacy-"));
   try {
     // Ask npm for its real packlist. --ignore-scripts prevents this prepack
@@ -267,8 +296,14 @@ export function checkNpmPublication({ root = process.cwd() } = {}) {
     if (!Array.isArray(packages) || packages.length !== 1 || !Array.isArray(packages[0]?.files)) {
       throw new RepositoryPrivacyError("INVALID_ARTIFACT_MANIFEST");
     }
-    const source = assertRepositoryPrivacy({ root });
-    assertPublicationPrivacy(packages[0].files.map((file) => file?.path));
+    const paths = packages[0].files.map((file) => file?.path);
+    assertPublicationPrivacy(paths);
+    const canonicalRoot = realpathSync(root);
+    let documentBytes = 0;
+    for (const path of paths) {
+      documentBytes += assertDocumentationPublicationFile(canonicalRoot, path);
+      if (documentBytes > 8_388_608) throw new DocumentationPolicyError("DOCUMENTATION_TOO_LARGE");
+    }
     return source;
   } finally {
     try { rmSync(scratch, { recursive: true, force: true }); } catch { throw new RepositoryPrivacyError("CHECK_CLEANUP_FAILED"); }
@@ -279,6 +314,7 @@ function main(args) {
   try {
     if (args.length === 0 || (args.length === 1 && args[0] === "--staged")) {
       assertRepositoryPrivacy();
+      assertDocumentationPolicy({ staged: true });
     } else if (args.length === 1 && args[0] === "--install-hooks") {
       installPrivacyHooks();
     } else if (args.length === 1 && args[0] === "--pre-push") {
@@ -292,7 +328,7 @@ function main(args) {
       throw new RepositoryPrivacyError("UNSUPPORTED_ARGUMENTS");
     }
   } catch (error) {
-    const known = error instanceof RepositoryPrivacyError;
+    const known = error instanceof RepositoryPrivacyError || error instanceof DocumentationPolicyError;
     console.error(`repository privacy check failed: ${known ? error.code : "CHECK_FAILED"}`);
     if (known) for (const path of error.paths) console.error(JSON.stringify(path));
     process.exitCode = 1;

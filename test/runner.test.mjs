@@ -32,6 +32,23 @@ const claPath = ".github/workflows/cla.yaml";
 const mavenBundlePath = "scripts/maven-central-bundle.local.sh";
 const mavenBundleFixture = "#!/usr/bin/env bash\nexit 0\n";
 
+const installVersionRegistry = (root) => writeFileSync(join(root, "git"), `#!/bin/sh
+if [ "$1" = ls-remote ]; then
+  if [ "$FIXTURE_ACTION_FAIL" = true ]; then exit 2; fi
+  case "$3" in
+    https://github.com/actions/checkout.git) pin=3d3c42e5aac5ba805825da76410c181273ba90b1; version=7.0.1 ;;
+    https://github.com/actions/upload-artifact.git) pin=cf430e030ddbb5b0abf93d22962f4752f3646cd9; version=7.0.2 ;;
+    https://github.com/actions/download-artifact.git) pin=9000827ccba6bdab643e8b6fd33ac0654aef8333; version=8.0.2 ;;
+    https://github.com/iainmcgin/cla-github-action.git) pin=0d27e5a16278d4adb6b0c4b92f08ad27b0a21dc8; version=3.2.0 ;;
+    *) exit 2 ;;
+  esac
+  if [ "$FIXTURE_ACTION_STALE" = true ]; then pin=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; fi
+  printf '%s\\trefs/tags/v%s\\n' "$pin" "$version"
+  exit 0
+fi
+exec /usr/bin/git "$@"
+`, { mode: 0o755 });
+
 const createConsumer = () => {
   const root = mkdtempSync(join(tmpdir(), "reallyme-release-runner-"));
   writeFileSync(join(root, ".gitignore"), privacyRules);
@@ -198,6 +215,18 @@ test("the runner enforces privacy before any consumer or public/private workflow
     const rejected = runConsumer(root, runnerPath, {}, args);
     assert.equal(rejected.status, 1);
     assert.match(rejected.stderr, /repository privacy policy failed: LOCAL_ONLY_PATH/u);
+  }
+});
+
+test("the runner blocks untracked work reports before consumer, workflow and release commands", (t) => {
+  const root = createConsumer();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, "task-report.md"), "# Task summary\n");
+  for (const args of [[], ["--check-workflows"], ["--render-ci"], ["--render-preflight-summary"], ["--check-dependencies"],
+    ["--check-release", "npm", "preflight", "1.2.3", "v1.2.3", "a".repeat(40)]]) {
+    const rejected = runConsumer(root, runnerPath, {}, args);
+    assert.equal(rejected.status, 1, rejected.stdout);
+    assert.match(rejected.stderr, /TRANSIENT_DOCUMENTATION_ARTIFACT/u);
   }
 });
 
@@ -371,7 +400,7 @@ test("the preflight summary gives the configured publish command and form inputs
       .map(([, name, pattern]) => [name, pattern]),
   );
   const shell = body.replace(/^ {4}/gmu, "");
-  const summary = join(root, "step summary.md");
+  const summary = join(root, ".git", "step-summary.md");
   const sha = "a".repeat(40);
   const execute = (overrides = {}) => spawnSync("bash", ["-e", "-o", "pipefail", "-c", shell], {
     encoding: "utf8",
@@ -497,6 +526,7 @@ test("release command binds versions, workflow identity and GitHub preflight evi
     "commit", "--quiet", "-m", "Release candidate"], { cwd: root, encoding: "utf8" });
   assert.equal(commit.status, 0, commit.stderr);
   const sha = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+  installVersionRegistry(root);
   const eventPath = join(root, "event.json");
   const outputs = join(root, "outputs");
   writeFileSync(eventPath, JSON.stringify({
@@ -584,7 +614,16 @@ process.stdout.write(JSON.stringify([page]));
     const result = check(phase);
     assert.equal(result.status, 0, result.stderr);
   }
-  assert.equal(readFileSync(outputs, "utf8"), "ci_run_id=91\ntag_owner=github\nci_run_id=91\npreflight_run_id=92\npackage_artifact_ids=99\ntag_owner=github\n");
+  const staleDependency = check("preflight", { FIXTURE_ACTION_STALE: "true" });
+  assert.equal(staleDependency.status, 1);
+  assert.match(staleDependency.stderr, /Dependency update required/u);
+  const noRegistry = check("preflight", { FIXTURE_ACTION_FAIL: "true" });
+  assert.equal(noRegistry.status, 1);
+  assert.match(noRegistry.stderr, /DEPENDENCY_COMMAND_FAILED/u);
+  // Publishing reuses preflight instead of repeating online maintenance.
+  assert.equal(check("publish", { FIXTURE_ACTION_FAIL: "true" }).status, 0);
+  assert.equal(readFileSync(outputs, "utf8"), "ci_run_id=91\ntag_owner=github\n" +
+    "ci_run_id=91\npreflight_run_id=92\npackage_artifact_ids=99\ntag_owner=github\n".repeat(2));
   const noArtifact = check("publish", { FIXTURE_NO_NPM_PACKAGE: "true" });
   assert.equal(noArtifact.status, 1);
   assert.match(noArtifact.stderr, /requires every declared package artifact/u);
@@ -814,6 +853,18 @@ test("runner accepts a consumer without a vendored core", () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
+test("dependency maintenance is available locally without public workflow configuration", (t) => {
+  const root = createConsumer();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const check = (args) => runConsumer(root, runnerPath, {}, args);
+  for (const args of [["--check-dependencies"], ["--check-dependencies", "--validate"]]) {
+    const result = check(args);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Dependency maintenance passed: 0 Cargo workspace/u);
+  }
+  assert.equal(check(["--check-dependencies", "--skip-audit"]).status, 1);
+});
+
 test("runner supplies its immutable package core to the consumer", () => {
   const root = createConsumer();
   writeFileSync(
@@ -821,7 +872,7 @@ test("runner supplies its immutable package core to the consumer", () => {
     `const coreUrl = process.env.RELEASE_READINESS_CORE_URL;
 if (typeof coreUrl !== "string") process.exit(2);
 const { RELEASE_READINESS_VERSION } = await import(coreUrl);
-if (RELEASE_READINESS_VERSION !== "0.9.7") process.exit(3);
+if (RELEASE_READINESS_VERSION !== "0.9.8") process.exit(3);
 `,
   );
   const result = runConsumer(root);
@@ -901,6 +952,9 @@ test("runner-bound core remains external inside the consumer checkout", () => {
   copyFileSync(publicCiPath, join(packageScripts, "public-ci.mjs"));
   copyFileSync(publicReleasePath, join(packageScripts, "public-release.mjs"));
   copyFileSync(privacyPath, join(packageScripts, "repository-privacy.mjs"));
+  for (const file of ["dependency-maintenance.mjs", "dependency-versions.mjs", "documentation-policy.mjs"]) {
+    copyFileSync(new URL(`../scripts/${file}`, import.meta.url), join(packageScripts, file));
+  }
   writeFileSync(
     join(root, "scripts", "check_release_readiness.mjs"),
     `const { createReleaseReadinessContext } = await import(
@@ -960,6 +1014,7 @@ test("release command carries a skipped lane forward only from an unchanged ance
   const docs = commit("Docs only");
   writeFileSync(join(root, "packages/swift/Library.swift"), "public let value = 2\n");
   const swiftChange = commit("Swift change");
+  installVersionRegistry(root);
   const eventPath = join(root, "event.json");
   writeFileSync(join(root, ".git", "info", "exclude"), "gh\nevent.json\noutputs\n");
   writeFileSync(join(root, "gh"), `#!/bin/sh

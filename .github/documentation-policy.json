@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "documents": [
+    {
+      "path": "docs/archetype-matrix.md",
+      "kind": "reference",
+      "purpose": "Help repository owners choose the supported repository archetype."
+    },
+    {
+      "path": "docs/repository-shapes.md",
+      "kind": "reference",
+      "purpose": "Define repository layouts, crate roles, and supported structural contracts."
+    },
+    {
+      "path": "docs/protobuf-first.md",
+      "kind": "contract",
+      "purpose": "Specify schema ownership, shared errors, and SDK conformance requirements."
+    },
+    {
+      "path": "docs/rust-release.md",
+      "kind": "guide",
+      "purpose": "Explain Rust toolchain, MSRV, dependency, and release verification setup."
+    },
+    {
+      "path": "docs/public-ci.md",
+      "kind": "guide",
+      "purpose": "Explain how public repositories configure CI lanes and package releases."
+    },
+    {
+      "path": "docs/repository-privacy.md",
+      "kind": "guide",
+      "purpose": "Explain local-file exclusions, Git safeguards, and publication checks."
+    },
+    {
+      "path": "docs/dependency-maintenance.md",
+      "kind": "guide",
+      "purpose": "Explain dependency maintenance commands and deliberate version holds."
+    }
+  ]
+}

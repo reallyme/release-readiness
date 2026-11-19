@@ -71,7 +71,7 @@ current marker is:
 ```js
 assertContains(
   "core.mjs",
-  'RELEASE_READINESS_VERSION = "0.9.7"',
+  'RELEASE_READINESS_VERSION = "0.9.8"',
 );
 ```
 
@@ -89,14 +89,63 @@ npm run check
 
 The GitHub Actions workflow runs the same command on Node 26.
 
+## Documentation policy
+
+Create standalone documentation only when requested and useful to users or
+maintainers. Keep task discussions, audit dumps, implementation summaries,
+progress logs, handoffs, and cleanup histories in the chat or ignored local
+storage. Do not add work reports to source control or release artifacts.
+
+The runner, installed Git hooks, and publication checks enforce this policy.
+Run `npm run check:documentation` here, or
+`node .release-readiness/scripts/documentation-policy.mjs` in a consumer.
+Local checks include untracked documentation; commit hooks read staged bytes;
+push hooks also reject report artifacts introduced and deleted before the tip.
+Git-ignored local notes stay outside the documentation inventory.
+
+READMEs, contribution and security policies, legal notices, and changelogs use
+their conventional filenames. Declare other public documentation by exact path,
+kind, and concrete purpose in `.github/documentation-policy.json`, including
+existing custom guides when adopting this policy:
+
+```json
+{
+  "schema": 1,
+  "documents": [
+    {
+      "path": "docs/api.md",
+      "kind": "reference",
+      "purpose": "Describe the public API and its compatibility guarantees."
+    }
+  ]
+}
+```
+
+Supported kinds are `guide`, `reference`, `contract`, `architecture`,
+`contributing`, `legal`, `changelog`, and `decision`. Wildcard approvals,
+duplicate or stale declarations, and task-report names or opening titles fail.
+A purpose declaration does not authorize a transient work report. Review
+documentation declarations as part of the change that adds the document.
+Publication checks also inspect document titles inside generated npm output
+and nested archives, without printing document contents.
+
 ## Keeping Pins Current
 
-This repository has no npm runtime dependencies. Its own workflow has two
-immutable action references (`actions/checkout` and `actions/setup-node`).
+This repository has no npm runtime or development dependencies. Its workflows
+pin `actions/checkout`, `actions/setup-node`, and the CLA action to immutable
+commits.
 The release checker verifies each named action's repository and its full
 commit SHA; a reviewed update to that SHA only changes the workflow. A
 repository may configure the `github-actions` Dependabot ecosystem to propose
 those workflow updates.
+
+Before release, run `npm run check:dependencies`. Consumer package preflights
+run the same [dependency maintenance gate](docs/dependency-maintenance.md)
+automatically. It reviews every Cargo workspace and lockfile, direct and
+transitive registry versions, and CI action/tool pins. Repositories can declare
+individual version holds with a reason and expiry; security audit failures
+still block release. Use `--check-dependencies --validate` to run the full Rust
+validation pass locally without repeating those builds during preflight.
 
 Other exact requirements are intentional toolchain and release contracts:
 
@@ -106,7 +155,7 @@ Other exact requirements are intentional toolchain and release contracts:
 | ReallyMe Buffa runtime and generators | Exact workflow `BUFFA_VERSION` and matching Cargo requirement for `reallyme-buffa` | Update the workflow, Cargo requirement, lockfile where used, and generated output together |
 | cargo-fuzz template | Exact workflow `CARGO_FUZZ_VERSION` | Update the workflow value; both install lanes use that variable |
 | Node runtime | 26 in this repository and template; consumer minimum and package engine `>=26` | Review a runtime-major migration in this repository's workflow, checker, template, and package engine |
-| Release-readiness package | 0.9.7 | Publish a new package revision and update consumer pins |
+| Release-readiness package | 0.9.8 | Publish a new package revision and update consumer pins |
 
 Dependabot does not update version literals embedded in checker source. The
 shared core validates Buf, the ReallyMe Buffa toolchain, and template cargo-fuzz

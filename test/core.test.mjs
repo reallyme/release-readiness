@@ -1492,7 +1492,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Install cargo-deny
-        run: cargo +1.100.0 install cargo-deny --version '=0.20.2' --locked
+        run: cargo +1.100.0 install cargo-deny --version '=0.21.0' --locked
       - name: Check locked dependencies
         run: cargo +1.100.0 deny --locked --workspace --all-features --config deny.toml check advisories licenses sources
 `;
@@ -1576,11 +1576,11 @@ test("Rust dependency review requires the locked graph and a blocking advisory c
   const { root, policy, check, workflow } = createRustReleaseFixture();
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const path = join(root, policy.dependencyReview.workflow);
-  const pinnedInstall = "      - name: Install cargo-deny\n        run: cargo +1.100.0 install cargo-deny --version '=0.20.2' --locked\n";
+  const pinnedInstall = "      - name: Install cargo-deny\n        run: cargo +1.100.0 install cargo-deny --version '=0.21.0' --locked\n";
   for (const [configured, diagnostic] of [
     [workflow.replace("deny --locked", "deny"), /Check locked dependencies run command changed/u],
     [workflow.replace("advisories licenses sources", "licenses sources"), /Check locked dependencies run command changed/u],
-    [workflow.replace("'=0.20.2'", "'0.20.2'"), /Install cargo-deny run command changed/u],
+    [workflow.replace("'=0.21.0'", "'0.21.0'"), /Install cargo-deny run command changed/u],
     [workflow.replace(pinnedInstall, "") + pinnedInstall, /must install Cargo Deny before dependency review/u],
     [workflow.replace("  audit:\n", "  audit:\n    continue-on-error: true\n"), /must fail CI when verification fails/u],
   ]) {
@@ -1605,7 +1605,7 @@ test("Rust dependency review prevents restored tool collisions and supports a pi
   const { root, policy, check, workflow } = createRustReleaseFixture();
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const path = join(root, policy.dependencyReview.workflow);
-  const installCommand = "        run: cargo +1.100.0 install cargo-deny --version '=0.20.2' --locked";
+  const installCommand = "        run: cargo +1.100.0 install cargo-deny --version '=0.21.0' --locked";
   const cachedWorkflow = workflow.replace(
     "      - name: Install cargo-deny",
     `      - name: Cache Cargo
@@ -1614,7 +1614,7 @@ test("Rust dependency review prevents restored tool collisions and supports a pi
   );
   const prebuilt = cachedWorkflow.replace(installCommand, `        uses: taiki-e/install-action@${fullSha}
         with:
-          tool: cargo-deny@0.20.2
+          tool: cargo-deny@0.21.0
           fallback: none`);
   const dependencyCacheOnly = cachedWorkflow.replace(
     `uses: Swatinem/rust-cache@${fullSha}\n`,
@@ -1632,6 +1632,8 @@ test("Rust dependency review prevents restored tool collisions and supports a pi
   for (const configured of [
     cachedWorkflow.replace(installCommand, `${installCommand} --force`),
     prebuilt,
+    prebuilt.replace("cargo-deny@0.21.0", "cargo-deny@0.22.0"),
+    cachedWorkflow.replace(installCommand, `${installCommand.replace("=0.21.0", "=0.22.0")} --force`),
     dependencyCacheOnly,
   ]) {
     writeFileSync(path, configured);
@@ -1642,15 +1644,15 @@ test("Rust dependency review prevents restored tool collisions and supports a pi
   for (const [configured, diagnostic] of [
     [cachedWorkflow, /can collide with restored tools/u],
     [dependencyCacheOnly.replace("          key: rust-dependencies\n", ""), /can collide with restored tools/u],
-    [dependencyCacheOnly.replace("tool: cargo-nextest@0.9.151", "tool: cargo-deny@0.20.2"), /can collide with restored tools/u],
+    [dependencyCacheOnly.replace("tool: cargo-nextest@0.9.151", "tool: cargo-deny@0.21.0"), /can collide with restored tools/u],
     [cachedWorkflow.replace("Swatinem/rust-cache@", "actions/cache/restore@"), /can collide with restored tools/u],
     [cachedWorkflow.replace("Swatinem/rust-cache@", "taiki-e/install-action@"), /can collide with restored tools/u],
     [cachedWorkflow.replace(installCommand, `${installCommand} --force || true`), /run command changed/u],
     [prebuilt.replace(fullSha + "\n        with:", "v2\n        with:"), /pinned to a full commit SHA/u],
-    [prebuilt.replace("cargo-deny@0.20.2", "cargo-deny@0.20"), /must install cargo-deny@0\.20\.2/u],
+    [prebuilt.replace("cargo-deny@0.21.0", "cargo-deny@0.20"), /must install an exact stable cargo-deny version/u],
     [prebuilt.replace("fallback: none", "fallback: cargo-install"), /fallback: none/u],
     [prebuilt.replace("fallback: none", "fallback: none\n          checksum: false"), /with checksums/u],
-    [prebuilt.replace("fallback: none", "fallback: none\n          tool: cargo-deny@0.20.2"), /duplicate installer input/u],
+    [prebuilt.replace("fallback: none", "fallback: none\n          tool: cargo-deny@0.21.0"), /duplicate installer input/u],
     [prebuilt.replace("      - name: Install cargo-deny\n", `      - name: Install cargo-deny\n${installCommand}\n`), /one installation method/u],
     [prebuilt.replace("      - name: Install cargo-deny\n", "      - name: Install cargo-deny\n        if: false\n"), /must run without an if condition/u],
   ]) {
@@ -4804,7 +4806,7 @@ test("local checker template is syntactically valid and fails closed by construc
   assert.match(template, /assertReallyMeRustProtoRepositoryPolicy/u);
   assert.match(template, /assertNoTemplateMarkers\(repositoryPolicy\)/u);
   assert.match(template, /validatePublishablePathDependencies: true/u);
-  assert.match(template, /version: "0\.9\.7"/u);
+  assert.match(template, /version: "0\.9\.8"/u);
   assert.match(template, /versionFromWorkflowEnv: true/u);
   assert.match(template, /installBufAction: "bufbuild\/buf-action"/u);
   assert.match(template, /REPLACE_SECRET_BYTE_FIELD/u);
@@ -4815,7 +4817,7 @@ test("vendored core policy rejects assertions hidden in strings", () => {
   const root = createTrackedFixture();
   writeFileSync(
     join(root, "scripts", "release-readiness", "core.mjs"),
-    `export const RELEASE_READINESS_VERSION = "0.9.7";
+    `export const RELEASE_READINESS_VERSION = "0.9.8";
 const assertReallyMeVendoredCorePolicy = () => {
   "assertGeneratedArtifactsFresh";
   "assertGeneratedProtoHardeningPolicy";

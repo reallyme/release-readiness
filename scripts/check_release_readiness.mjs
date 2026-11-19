@@ -4,8 +4,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { assertRepositoryPrivacy } from "./repository-privacy.mjs";
+import { assertDocumentationPolicy } from "./documentation-policy.mjs";
 
 assertRepositoryPrivacy();
+assertDocumentationPolicy();
 
 import {
   createReleaseReadinessContext,
@@ -58,8 +60,8 @@ allow = [
 if (packageJson.version !== RELEASE_READINESS_VERSION) {
   fail("package version must match the shared core release version");
 }
-if (RELEASE_READINESS_VERSION !== "0.9.7") {
-  fail("package version must remain 0.9.7 for this release");
+if (RELEASE_READINESS_VERSION !== "0.9.8") {
+  fail("package version must remain 0.9.8 for this release");
 }
 if (
   JSON.stringify(packageJson.files) !==
@@ -71,6 +73,9 @@ if (
     "scripts/public-ci.mjs",
     "scripts/public-release.mjs",
     "scripts/public-repo-policy.mjs",
+    "scripts/dependency-maintenance.mjs",
+    "scripts/dependency-versions.mjs",
+    "scripts/documentation-policy.mjs",
     "scripts/repository-privacy.mjs",
     "scripts/publication-paths.py",
     "scripts/run-consumer-check.mjs",
@@ -87,7 +92,7 @@ for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]
   }
 }
 
-assertContains("core.mjs", 'RELEASE_READINESS_VERSION = "0.9.7"');
+assertContains("core.mjs", 'RELEASE_READINESS_VERSION = "0.9.8"');
 assertNotContains("core.mjs", "RELEASE_READINESS_CORE_CONTRACT_VERSION");
 assertContains("package.json", '"reallyme-release-readiness": "scripts/run-consumer-check.mjs"');
 assertContains("scripts/run-consumer-check.mjs", "RELEASE_READINESS_CORE_URL");
@@ -97,6 +102,9 @@ assertContains("scripts/run-consumer-check.mjs", "RELEASE_READINESS_ENFORCED_VER
 assertContains("scripts/run-consumer-check.mjs", "requiredSourcePolicies");
 assertContains("scripts/run-consumer-check.mjs", "assertPublicRepoPolicy");
 assertContains("scripts/run-consumer-check.mjs", "assertRepositoryPrivacy");
+assertContains("scripts/run-consumer-check.mjs", "assertDocumentationPolicy");
+assertContains("scripts/run-consumer-check.mjs", "await reviewDependencies(false)");
+assertContains("docs/dependency-maintenance.md", ".github/dependency-maintenance.json");
 assertContains("README.md", "docs/repository-privacy.md");
 assertContains("package.json", '"prepack": "node scripts/repository-privacy.mjs --npm-package"');
 assertWorkflowRunStep(".github/workflows/checks.yml", "Check repository privacy", "node scripts/repository-privacy.mjs --staged");
@@ -240,7 +248,7 @@ assertContains("README.md", "buf generate");
 assertContains("README.md", "ReallyMe Buffa generator");
 assertContains("README.md", "actions/workflows/ci.yml/badge.svg");
 assertContains("README.md", "docs/public-ci.md");
-assertContains("README.md", 'RELEASE_READINESS_VERSION = "0.9.7"');
+assertContains("README.md", 'RELEASE_READINESS_VERSION = "0.9.8"');
 assertContains("README.md", "repository: reallyme/release-readiness");
 assertContains("README.md", "ref: FULL_RELEASE_READINESS_COMMIT_SHA");
 assertContains("README.md", "persist-credentials: false");
@@ -269,7 +277,7 @@ for (const needle of [
   "rustRelease: {",
   "reallyMeLatestStableDependencies: true",
   "rustSource: {",
-  'version: "0.9.7"',
+  'version: "0.9.8"',
   "repositoryShape: {",
   'archetype: "protocol-engine"',
   "typescriptSource: {",

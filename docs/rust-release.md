@@ -68,9 +68,9 @@ steps into the corresponding CI jobs after checkout and toolchain setup:
 
 # In job dependencies, in this order
 - name: Install cargo-deny
-  uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39
+  uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f
   with:
-    tool: cargo-deny@0.20.2
+    tool: cargo-deny@0.21.0
     fallback: none
 - name: Check locked dependencies
   run: cargo +1.100.0 deny --locked --workspace --all-features --config deny.toml check advisories licenses sources
@@ -81,7 +81,7 @@ the runner. A source build can use the plain pinned Cargo install when the
 binary directory stays clean. For `Swatinem/rust-cache`, set
 `cache-bin: false` and use a new dependency-only cache key when migrating
 from a cache that included binaries. Use
-`cargo +1.100.0 install cargo-deny --version '=0.20.2' --locked --force`
+`cargo +1.100.0 install cargo-deny --version '=0.21.0' --locked --force`
 when a restored cache or earlier setup step can leave an existing binary.
 Release-readiness validates these steps locally without restoring caches or
 installing anything. Run the consumer's policy checks as well as
@@ -104,6 +104,12 @@ additional supported targets, feature combinations, and any separate tooling
 or fuzzing lockfiles.
 
 ## Lockfiles and security patches
+
+Package preflight enforces the [dependency maintenance gate](dependency-maintenance.md).
+Run it before preparing a candidate so dependency upgrades, compatibility
+fixes, and any deliberate version holds can be reviewed as source changes.
+Cargo Deny may advance to a newer exact stable pin without changing the core;
+the maintenance gate checks the registry version rather than freezing it here.
 
 Commit `Cargo.lock` with dependency changes. The CI audit checks the locked
 workspace graph, including new direct and transitive dependencies, against

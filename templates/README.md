@@ -132,12 +132,15 @@ The template enables the following mandatory baseline through
 The shared core validates exact `BUF_VERSION` and `BUFFA_VERSION` values in
 the protobuf workflow's top-level `env`. Declare `reallyme-buffa` as the
 protobuf crate's `buffa` runtime dependency and pin it to the same exact
-registry version. For the 0.1.2 toolchain, use:
+registry version. For the 0.1.3 toolchain, use:
 
 ```toml
 [dependencies]
-buffa = { package = "reallyme-buffa", version = "=0.1.2", features = ["json", "zeroize"] }
+buffa = { package = "reallyme-buffa", version = "=0.1.3", features = ["json", "zeroize"] }
 ```
+
+ReallyMe Buffa 0.1.3 requires Rust 1.100. Declare and test that minimum in
+crates using this runtime rather than advertising a lower MSRV.
 
 The crate may inherit the same dependency through `[workspace.dependencies]`.
 Use both exact installs in the workflow's `Install pinned Buffa generators`

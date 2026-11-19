@@ -26,11 +26,14 @@ const generatedFreshnessMode = process.argv.includes("--generated-freshness");
 
 // Replace every REPLACE_* value when installing this template. Keep
 // repository-specific facts here instead of forking shared policy logic.
+// The runner validates documentation separately. Declare custom public guides
+// in .github/documentation-policy.json. Keep task reports, audit dumps, progress
+// logs and handoffs in the chat or ignored local storage.
 const repositoryPolicy = {
   generatedFreshnessMode,
   releasePackage: {
     scriptPath: "scripts/check_release_readiness.mjs",
-    version: "0.9.7",
+    version: "0.9.8",
   },
   workflowActions: {},
   nodeWorkflows: { nodeVersion: "26" },
